@@ -21,6 +21,9 @@
 - **前端**：原生 HTML/CSS/JavaScript
 - **容器化**：Docker（多平台支持：amd64/arm64）
 
+## 实例
+![图片](./img/img.png)
+
 ## 快速开始
 
 ### 方式 1：Docker 部署（推荐）
