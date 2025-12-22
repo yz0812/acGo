@@ -194,22 +194,152 @@ def update_account(account_id):
 def delete_account(account_id):
     """删除账号"""
     db.connect(reuse_if_open=True)
-    
+
     try:
         account = Account.get_by_id(account_id)
-        
+
         # 移除定时任务
         remove_job(account_id)
-        
+
         # 删除账号（级联删除日志）
         account.delete_instance()
-        
+
         return jsonify({'success': True, 'message': '账号删除成功'})
-        
+
     except Account.DoesNotExist:
         return jsonify({'success': False, 'message': '账号不存在'}), 404
     finally:
         db.close()
+
+
+@app.route('/api/accounts/export', methods=['GET'])
+@login_required
+def export_accounts():
+    """导出所有账号"""
+    db.connect(reuse_if_open=True)
+
+    try:
+        accounts = Account.select()
+
+        # 转换为可导出的格式（排除 id 和 created_at）
+        export_data = []
+        for acc in accounts:
+            export_data.append({
+                'name': acc.name,
+                'curl_command': acc.curl_command,
+                'cron_expr': acc.cron_expr,
+                'retry_count': acc.retry_count,
+                'retry_interval': acc.retry_interval,
+                'enabled': acc.enabled
+            })
+
+        return jsonify({
+            'success': True,
+            'data': export_data
+        })
+
+    finally:
+        db.close()
+
+
+@app.route('/api/accounts/import', methods=['POST'])
+@login_required
+def import_accounts():
+    """导入账号"""
+    data = request.get_json()
+
+    if not data or 'accounts' not in data:
+        return jsonify({'success': False, 'message': '缺少 accounts 参数'}), 400
+
+    accounts = data['accounts']
+
+    if not isinstance(accounts, list):
+        return jsonify({'success': False, 'message': 'accounts 必须是数组'}), 400
+
+    db.connect(reuse_if_open=True)
+
+    try:
+        imported = 0
+        failed = 0
+        renamed = 0
+        errors = []
+
+        # 获取现有账号名称
+        existing_names = set(acc.name for acc in Account.select(Account.name))
+
+        for idx, acc_data in enumerate(accounts):
+            try:
+                # 验证必填字段
+                required_fields = ['name', 'curl_command']
+                for field in required_fields:
+                    if field not in acc_data or not acc_data[field]:
+                        raise ValueError(f'缺少必填字段: {field}')
+
+                # 验证 curl 命令
+                try:
+                    parse_curl_command(acc_data['curl_command'])
+                except ValueError as e:
+                    raise ValueError(f'curl 命令无效: {e}')
+
+                # 处理重名账号（自动重命名）
+                original_name = acc_data['name']
+                account_name = original_name
+                counter = 1
+
+                while account_name in existing_names:
+                    account_name = f"{original_name}_导入{counter}"
+                    counter += 1
+                    renamed += 1
+
+                # 添加到已存在名称集合
+                existing_names.add(account_name)
+
+                # 创建账号
+                account = Account.create(
+                    name=account_name,
+                    curl_command=acc_data['curl_command'],
+                    cron_expr=acc_data.get('cron_expr', '0 8 * * *'),
+                    retry_count=acc_data.get('retry_count', 3),
+                    retry_interval=acc_data.get('retry_interval', 60),
+                    enabled=acc_data.get('enabled', True)
+                )
+
+                # 添加定时任务
+                if account.enabled:
+                    try:
+                        add_job(account.id, account.cron_expr)
+                    except Exception as e:
+                        # 如果添加任务失败，删除账号并记录错误
+                        account.delete_instance()
+                        raise ValueError(f'Cron 表达式错误: {e}')
+
+                imported += 1
+
+            except Exception as e:
+                failed += 1
+                errors.append(f'第 {idx + 1} 个账号: {str(e)}')
+
+        # 构造响应消息
+        message = f'导入完成：成功 {imported} 个，失败 {failed} 个'
+        if renamed > 0:
+            message += f'，重命名 {renamed} 个'
+
+        if errors:
+            message += f'\n\n错误详情:\n' + '\n'.join(errors[:5])  # 最多显示 5 个错误
+            if len(errors) > 5:
+                message += f'\n... 还有 {len(errors) - 5} 个错误'
+
+        return jsonify({
+            'success': True,
+            'message': message,
+            'imported': imported,
+            'failed': failed,
+            'renamed': renamed
+        })
+
+    finally:
+        db.close()
+
 
 
 @app.route('/api/checkin/<int:account_id>', methods=['POST'])
