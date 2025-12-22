@@ -1,0 +1,49 @@
+# 多阶段构建 - 构建阶段
+FROM python:3.11-alpine AS builder
+
+WORKDIR /app
+
+# 安装构建依赖
+RUN apk add --no-cache \
+    gcc \
+    musl-dev \
+    libffi-dev
+
+# 复制依赖文件
+COPY requirements.txt .
+
+# 安装 Python 依赖到临时目录
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 运行阶段
+FROM python:3.11-alpine
+
+WORKDIR /app
+
+# 设置环境变量
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/install/bin:$PATH" \
+    PYTHONPATH="/install/lib/python3.11/site-packages"
+
+# 安装运行时依赖
+RUN apk add --no-cache libffi
+
+# 从构建阶段复制已安装的包
+COPY --from=builder /install /install
+
+# 复制应用文件
+COPY . .
+
+# 创建数据目录
+RUN mkdir -p /app/data
+
+# 暴露端口
+EXPOSE 5000
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:5000/login || exit 1
+
+# 启动应用
+CMD ["python", "app.py"]

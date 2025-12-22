@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  acgo:
+    build: .
+    container_name: acgo
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      # 持久化数据库
+      - ./data:/app/data
+    environment:
+      # 管理员密码（可选，默认：acgo123321）
+      - ADMIN_PASSWORD=acgo123321
+      # Flask 密钥（可选，已有安全默认值）
+      - SECRET_KEY=a8f5f167f44f4964e6c998dee827110c5b92c0f8d1e3a7b2c4f6e8d0a2b4c6e8
+    # 或者使用 .env 文件
+    # env_file:
+    #   - .env
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/login"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
