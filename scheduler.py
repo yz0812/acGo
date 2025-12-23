@@ -307,13 +307,37 @@ def send_webhook_notification(account_name: str, status: str, response_code: int
 
         # 发送请求
         if method.upper() == 'POST':
-            headers.setdefault('Content-Type', 'application/json')
-            response = requests.post(
-                url_config.value,
-                json=payload,
-                headers=headers,
-                timeout=10
-            )
+            # 检测 Content-Type，决定发送格式
+            content_type = headers.get('Content-Type', 'application/json').lower()
+
+            if 'multipart/form-data' in content_type:
+                # Multipart 格式：移除 Content-Type，让 requests 自动生成 boundary
+                headers.pop('Content-Type', None)
+                # 将 payload 转换为 files 格式
+                files = {k: (None, str(v)) for k, v in payload.items()}
+                response = requests.post(
+                    url_config.value,
+                    files=files,
+                    headers=headers,
+                    timeout=10
+                )
+            elif 'application/x-www-form-urlencoded' in content_type:
+                # Form 表单格式
+                response = requests.post(
+                    url_config.value,
+                    data=payload,
+                    headers=headers,
+                    timeout=10
+                )
+            else:
+                # 默认 JSON 格式
+                headers['Content-Type'] = 'application/json'
+                response = requests.post(
+                    url_config.value,
+                    json=payload,
+                    headers=headers,
+                    timeout=10
+                )
         else:  # GET
             response = requests.get(
                 url_config.value,

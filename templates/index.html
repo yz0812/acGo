@@ -151,8 +151,14 @@
 
                 <div class="form-group">
                     <label for="webhookHeaders">自定义请求头（可选）</label>
-                    <textarea id="webhookHeaders" rows="3" placeholder='{"Authorization": "Bearer token", "Content-Type": "application/json"}'></textarea>
-                    <small>JSON 格式，例如：{"Authorization": "Bearer token"}</small>
+                    <textarea id="webhookHeaders" rows="5" placeholder='{"Authorization": "Bearer token"}'></textarea>
+                    <small style="display: block; margin-top: 5px;">
+                        <strong>JSON 格式示例：</strong><br>
+                        <strong>1. JSON 格式（默认）：</strong>不设置或设置 <code>{"Content-Type": "application/json"}</code><br>
+                        <strong>2. Form 表单格式：</strong><code>{"Content-Type": "application/x-www-form-urlencoded"}</code><br>
+                        <strong>3. Multipart 格式：</strong><code>{"Content-Type": "multipart/form-data"}</code><br>
+                        <strong>4. 自定义认证：</strong><code>{"Authorization": "Bearer your_token"}</code>
+                    </small>
                 </div>
 
                 <div class="webhook-info">
