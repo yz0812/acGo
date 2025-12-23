@@ -603,9 +603,6 @@
         async function clearOldLogs() {
             if (!confirm('确定要清除7天前的签到记录吗？\n\n此操作不可恢复！')) return;
 
-            // 二次确认
-            if (!confirm('再次确认：真的要删除7天前的所有记录吗？')) return;
-
             try {
                 const res = await fetch('/api/logs/clear?days=7', {method: 'DELETE'});
                 const data = await res.json();
@@ -624,11 +621,6 @@
         // 清除全部日志
         async function clearAllLogs() {
             if (!confirm('⚠️ 警告：确定要清除全部签到记录吗？\n\n此操作不可恢复！')) return;
-
-            // 二次确认
-            if (!confirm('⚠️ 最后确认：真的要删除所有记录吗？\n\n请输入"确认删除"后点击确定')) {
-                return;
-            }
 
             try {
                 const res = await fetch('/api/logs/clear', {method: 'DELETE'});
