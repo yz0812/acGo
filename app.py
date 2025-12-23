@@ -587,10 +587,11 @@ def test_webhook():
 
         # 构造测试数据
         payload = {
+            'title': '测试账号',
             'account_name': '测试账号',
             'status': 'success',
             'response_code': 200,
-            'executed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'message': '这是一条测试通知'
         }
 

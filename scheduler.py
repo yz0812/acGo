@@ -293,10 +293,11 @@ def send_webhook_notification(account_name: str, status: str, response_code: int
 
         # 构造数据
         payload = {
+            'title': account_name,
             'account_name': account_name,
             'status': status,
             'response_code': response_code,
-            'executed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'message': message
         }
 
