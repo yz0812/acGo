@@ -47,6 +47,8 @@ docker run -d \
   -p 5000:5000 \
   -v $(pwd)/data:/app/data \
   -e ADMIN_PASSWORD=acgo123321 \
+  -e AUTO_CLEAN_LOGS=false \
+  -e MAX_LOGS_COUNT=500 \
   ghcr.io/your-username/acgo:latest
 
 # 访问系统
@@ -87,6 +89,8 @@ docker run -d \
   -p 5000:5000 \
   -v $(pwd)/data:/app/data \
   -e ADMIN_PASSWORD=acgo123321 \
+  -e AUTO_CLEAN_LOGS=false \
+  -e MAX_LOGS_COUNT=500 \
   acgo:latest
 
 # 3. 查看日志
