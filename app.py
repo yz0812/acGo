@@ -1,6 +1,7 @@
 """Flask 主程序"""
 import os
 import json
+from datetime import datetime
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from models import Account, CheckinLog, Config, db, init_db
 from auth import login_required, check_password
@@ -553,24 +554,97 @@ def save_webhook_config():
 @login_required
 def test_webhook():
     """测试 Webhook"""
-    from scheduler import send_webhook_notification
-
     db.connect(reuse_if_open=True)
 
     try:
-        # 发送测试通知
-        send_webhook_notification(
-            account_name='测试账号',
-            status='success',
-            response_code=200,
-            message='这是一条测试通知',
-            response_body='{"test": true, "message": "Webhook 测试成功"}'
-        )
+        # 获取 Webhook 配置
+        enabled_config = Config.get_or_none(Config.key == 'webhook_enabled')
+        url_config = Config.get_or_none(Config.key == 'webhook_url')
+        method_config = Config.get_or_none(Config.key == 'webhook_method')
+        headers_config = Config.get_or_none(Config.key == 'webhook_headers')
+        include_response_config = Config.get_or_none(Config.key == 'webhook_include_response')
 
+        # 验证配置
+        if not url_config or not url_config.value:
+            return jsonify({
+                'success': False,
+                'message': '请先配置 Webhook URL'
+            }), 400
+
+        # 解析配置
+        method = method_config.value if method_config else 'POST'
+        headers = {}
+        if headers_config and headers_config.value:
+            try:
+                headers = json.loads(headers_config.value)
+            except json.JSONDecodeError as e:
+                return jsonify({
+                    'success': False,
+                    'message': f'自定义请求头 JSON 格式错误: {str(e)}'
+                }), 400
+
+        include_response = include_response_config and include_response_config.value == 'true'
+
+        # 构造测试数据
+        payload = {
+            'account_name': '测试账号',
+            'status': 'success',
+            'response_code': 200,
+            'executed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'message': '这是一条测试通知'
+        }
+
+        if include_response:
+            payload['response_body'] = '{"test": true, "message": "Webhook 测试成功"}'
+
+        # 发送请求
+        import requests
+        
+        if method.upper() == 'POST':
+            headers.setdefault('Content-Type', 'application/json')
+            response = requests.post(
+                url_config.value,
+                json=payload,
+                headers=headers,
+                timeout=10
+            )
+        else:  # GET
+            response = requests.get(
+                url_config.value,
+                params=payload,
+                headers=headers,
+                timeout=10
+            )
+
+        # 检查响应
+        if 200 <= response.status_code < 300:
+            return jsonify({
+                'success': True,
+                'message': f'测试通知发送成功！\n\nHTTP {response.status_code}\n响应内容: {response.text[:200]}'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': f'Webhook 返回错误状态码: HTTP {response.status_code}\n响应内容: {response.text[:200]}'
+            }), 400
+
+    except requests.exceptions.Timeout:
         return jsonify({
-            'success': True,
-            'message': '测试通知已发送'
-        })
+            'success': False,
+            'message': '请求超时（10秒），请检查 Webhook URL 是否可访问'
+        }), 500
+
+    except requests.exceptions.ConnectionError as e:
+        return jsonify({
+            'success': False,
+            'message': f'连接失败，请检查 Webhook URL 是否正确: {str(e)}'
+        }), 500
+
+    except requests.exceptions.RequestException as e:
+        return jsonify({
+            'success': False,
+            'message': f'请求异常: {str(e)}'
+        }), 500
 
     except Exception as e:
         return jsonify({
@@ -603,6 +677,23 @@ def get_system_config():
 
     finally:
         db.close()
+
+
+def get_webhook_config_dict():
+    """获取 Webhook 配置字典（内部使用）"""
+    enabled_config = Config.get_or_none(Config.key == 'webhook_enabled')
+    url_config = Config.get_or_none(Config.key == 'webhook_url')
+    method_config = Config.get_or_none(Config.key == 'webhook_method')
+    headers_config = Config.get_or_none(Config.key == 'webhook_headers')
+    include_response_config = Config.get_or_none(Config.key == 'webhook_include_response')
+    
+    return {
+        'enabled': enabled_config and enabled_config.value == 'true',
+        'url': url_config.value if url_config else '',
+        'method': method_config.value if method_config else 'POST',
+        'headers': headers_config.value if headers_config else '',
+        'include_response': include_response_config and include_response_config.value == 'true'
+    }
 
 
 @app.route('/api/system/config', methods=['POST'])
