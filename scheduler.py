@@ -22,6 +22,12 @@ scheduler = BackgroundScheduler()
 def parse_curl_command(curl_cmd: str) -> Dict[str, Any]:
     """
     解析 curl 命令为 requests 参数
+    
+    支持各种 curl 格式，包括：
+    - 不同的选项顺序
+    - 单引号、双引号或无引号
+    - 短格式 (-X, -H, -d) 和长格式 (--request, --header, --data)
+    - URL 在任意位置
 
     Args:
         curl_cmd: curl 命令字符串
@@ -33,46 +39,140 @@ def parse_curl_command(curl_cmd: str) -> Dict[str, Any]:
         # 移除换行符和多余空格
         curl_cmd = curl_cmd.replace('\\\n', ' ').replace('\\n', ' ')
         curl_cmd = re.sub(r'\s+', ' ', curl_cmd).strip()
+        
+        # 确保命令以 curl 开头
+        if not curl_cmd.startswith('curl'):
+            curl_cmd = 'curl ' + curl_cmd
 
-        # 提取 URL
-        url_match = re.search(r"curl\s+['\"]?([^'\">\s]+)['\"]?", curl_cmd)
-        if not url_match:
-            raise ValueError('无法解析 URL')
-        url = url_match.group(1)
+        # ========== 提取 URL ==========
+        url = None
+        
+        # 方法1: 查找所有 http:// 或 https:// 开头的字符串
+        http_urls = re.findall(r"(https?://[^\s'\"]+)", curl_cmd)
+        if http_urls:
+            url = http_urls[0]
+        
+        # 方法2: 如果没找到，尝试匹配带引号的 URL
+        if not url:
+            url_patterns = [
+                r"curl\s+['\"]([^'\"]+)['\"]",  # curl 'URL'
+                r"curl\s+([^\s-][^\s]*)",        # curl URL (无引号，不以-开头)
+            ]
+            for pattern in url_patterns:
+                url_match = re.search(pattern, curl_cmd)
+                if url_match:
+                    potential_url = url_match.group(1)
+                    if potential_url.startswith(('http://', 'https://')):
+                        url = potential_url
+                        break
+        
+        if not url:
+            raise ValueError('无法解析 URL，请确保 curl 命令包含完整的 URL（http:// 或 https://）')
 
-        # 提取 Method（默认 GET）
-        method_match = re.search(r"-X\s+([A-Z]+)", curl_cmd)
-        method = method_match.group(1) if method_match else 'GET'
+        # ========== 提取 Method ==========
+        method = 'GET'
+        
+        # 支持多种格式
+        method_patterns = [
+            r"(?:-X|--request)\s+['\"]?([A-Z]+)['\"]?",  # -X POST 或 --request POST
+        ]
+        for pattern in method_patterns:
+            method_match = re.search(pattern, curl_cmd)
+            if method_match:
+                method = method_match.group(1).upper()
+                break
 
-        # 提取 Headers
+        # ========== 提取 Headers ==========
         headers = {}
-        header_matches = re.findall(r"-H\s+['\"]([^:]+):\s*([^'\"]+)['\"]", curl_cmd)
-        for key, value in header_matches:
-            headers[key.strip()] = value.strip()
+        
+        # 支持多种格式: -H, --header
+        header_patterns = [
+            r"(?:-H|--header)\s+['\"]([^:]+):\s*([^'\"]+)['\"]",  # -H 'key: value'
+            r"(?:-H|--header)\s+['\"]([^:]+):\s*([^'\"]*)['\"]",  # -H 'key: ' (空值)
+        ]
+        
+        for pattern in header_patterns:
+            header_matches = re.findall(pattern, curl_cmd)
+            for key, value in header_matches:
+                headers[key.strip()] = value.strip()
 
-        # 提取 Cookies
+        # ========== 提取 User-Agent ==========
+        user_agent_patterns = [
+            r"(?:-A|--user-agent)\s+['\"]([^'\"]+)['\"]",
+        ]
+        for pattern in user_agent_patterns:
+            ua_match = re.search(pattern, curl_cmd)
+            if ua_match:
+                headers['User-Agent'] = ua_match.group(1)
+                break
+
+        # ========== 提取 Referer ==========
+        referer_patterns = [
+            r"(?:-e|--referer)\s+['\"]([^'\"]+)['\"]",
+        ]
+        for pattern in referer_patterns:
+            ref_match = re.search(pattern, curl_cmd)
+            if ref_match:
+                headers['Referer'] = ref_match.group(1)
+                break
+
+        # ========== 提取 Cookies ==========
         cookies = {}
-        cookie_match = re.search(r"-b\s+['\"]([^'\"]+)['\"]", curl_cmd)
-        if cookie_match:
-            cookie_str = cookie_match.group(1)
-            for item in cookie_str.split(';'):
-                if '=' in item:
-                    k, v = item.split('=', 1)
-                    cookies[k.strip()] = v.strip()
+        
+        cookie_patterns = [
+            r"(?:-b|--cookie)\s+['\"]([^'\"]+)['\"]",
+        ]
+        
+        for pattern in cookie_patterns:
+            cookie_match = re.search(pattern, curl_cmd)
+            if cookie_match:
+                cookie_str = cookie_match.group(1)
+                # 解析 cookie 字符串
+                for item in cookie_str.split(';'):
+                    item = item.strip()
+                    if '=' in item:
+                        k, v = item.split('=', 1)
+                        cookies[k.strip()] = v.strip()
+                break
 
-        # 提取 Data
+        # ========== 提取 Data ==========
         data = None
-        data_match = re.search(r"--data-raw\s+['\"](.+?)['\"](?:\s|$)", curl_cmd, re.DOTALL)
-        if not data_match:
-            data_match = re.search(r"--data\s+['\"](.+?)['\"](?:\s|$)", curl_cmd, re.DOTALL)
-        if not data_match:
-            data_match = re.search(r"-d\s+['\"](.+?)['\"](?:\s|$)", curl_cmd, re.DOTALL)
+        
+        # 支持多种格式: -d, --data, --data-raw, --data-binary, --data-urlencode
+        data_patterns = [
+            r"(?:--data-raw)\s+['\"](.+?)['\"]",           # --data-raw 'data'
+            r"(?:--data-binary)\s+['\"](.+?)['\"]",        # --data-binary 'data'
+            r"(?:--data|--data-urlencode)\s+['\"](.+?)['\"]",  # --data 'data'
+            r"(?:-d)\s+['\"](.+?)['\"]",                   # -d 'data'
+        ]
+        
+        for pattern in data_patterns:
+            data_match = re.search(pattern, curl_cmd, re.DOTALL)
+            if data_match:
+                data = data_match.group(1)
+                # 如果有 data 但没有指定 method，自动设置为 POST
+                if method == 'GET':
+                    method = 'POST'
+                break
 
-        if data_match:
-            data = data_match.group(1)
-            # 如果是 POST 但没有指定 method，自动设置
-            if method == 'GET':
-                method = 'POST'
+        # ========== 提取 Form Data ==========
+        # 支持 -F 或 --form (multipart/form-data)
+        form_patterns = [
+            r"(?:-F|--form)\s+['\"]([^'\"]+)['\"]",
+        ]
+        
+        form_data = []
+        for pattern in form_patterns:
+            form_matches = re.findall(pattern, curl_cmd)
+            if form_matches:
+                form_data.extend(form_matches)
+                if method == 'GET':
+                    method = 'POST'
+        
+        # 如果有 form data，转换为 data 字符串（简化处理）
+        if form_data and not data:
+            # 这里简化处理，实际应该用 multipart/form-data
+            data = '&'.join(form_data)
 
         return {
             'url': url,
