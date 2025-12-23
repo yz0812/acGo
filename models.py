@@ -67,12 +67,47 @@ class Config(BaseModel):
         table_name = 'configs'
 
 
+def init_config():
+    """初始化系统配置（从环境变量读取默认值）"""
+    import os
+    from dotenv import load_dotenv
+    
+    load_dotenv()
+    
+    db.connect(reuse_if_open=True)
+    
+    try:
+        # 配置项及其默认值
+        default_configs = {
+            'admin_password': os.getenv('ADMIN_PASSWORD', 'acgo123321'),
+            'auto_clean_logs': os.getenv('AUTO_CLEAN_LOGS', 'false'),
+            'max_logs_count': os.getenv('MAX_LOGS_COUNT', '500')
+        }
+        
+        # 检查并初始化配置
+        for key, default_value in default_configs.items():
+            existing = Config.get_or_none(Config.key == key)
+            if not existing:
+                Config.create(
+                    key=key,
+                    value=default_value,
+                    updated_at=datetime.now()
+                )
+                print(f'初始化配置: {key} = {default_value}')
+    
+    finally:
+        db.close()
+
+
 def init_db():
     """初始化数据库"""
     db.connect(reuse_if_open=True)
     db.create_tables([Account, CheckinLog, Config], safe=True)  # safe=True 表示表已存在时不报错
     db.close()
     print('数据库检查完成')
+    
+    # 初始化配置
+    init_config()
 
 
 if __name__ == '__main__':

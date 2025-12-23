@@ -1,13 +1,7 @@
 """认证模块"""
-import os
 from functools import wraps
 from flask import session, redirect, url_for, request
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# 从环境变量读取管理员密码
-ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'acgo123321')
+from models import Config, db
 
 
 def login_required(f):
@@ -20,6 +14,16 @@ def login_required(f):
     return decorated_function
 
 
+def get_admin_password() -> str:
+    """从数据库获取管理员密码"""
+    db.connect(reuse_if_open=True)
+    try:
+        config = Config.get_or_none(Config.key == 'admin_password')
+        return config.value if config else 'acgo123321'
+    finally:
+        db.close()
+
+
 def check_password(password: str) -> bool:
     """验证密码"""
-    return password == ADMIN_PASSWORD
+    return password == get_admin_password()

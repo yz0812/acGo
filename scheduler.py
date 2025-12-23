@@ -3,8 +3,9 @@ import time
 import logging
 import re
 import json
+import random
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -84,6 +85,74 @@ def parse_curl_command(curl_cmd: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f'解析 curl 命令失败: {e}')
         raise ValueError(f'无效的 curl 命令: {e}')
+
+
+def parse_random_cron(cron_expr: str) -> Tuple[str, Optional[int]]:
+    """
+    解析支持随机时间窗口的 Cron 表达式
+    
+    支持格式：
+    - 标准 Cron: "0 8 * * *" → 每天 8:00 执行
+    - 随机窗口: "R(09:00-09:30) * * *" → 每天 9:00-9:30 之间随机执行
+    
+    Args:
+        cron_expr: Cron 表达式字符串
+        
+    Returns:
+        (标准 cron 表达式, 随机延迟秒数上限) 
+        如果不是随机模式，随机延迟为 None
+    """
+    # 检测随机时间窗口语法 R(HH:MM-HH:MM)
+    random_pattern = r'^R\((\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})\)\s+(.+)$'
+    match = re.match(random_pattern, cron_expr.strip())
+    
+    if not match:
+        # 标准 Cron 表达式，直接返回
+        return cron_expr, None
+    
+    # 解析随机时间窗口
+    start_hour, start_minute, end_hour, end_minute, rest = match.groups()
+    start_hour, start_minute = int(start_hour), int(start_minute)
+    end_hour, end_minute = int(end_hour), int(end_minute)
+    
+    # 验证时间有效性
+    if not (0 <= start_hour <= 23 and 0 <= start_minute <= 59):
+        raise ValueError(f'起始时间无效: {start_hour}:{start_minute}')
+    if not (0 <= end_hour <= 23 and 0 <= end_minute <= 59):
+        raise ValueError(f'结束时间无效: {end_hour}:{end_minute}')
+    
+    # 计算时间窗口（分钟）
+    start_total_minutes = start_hour * 60 + start_minute
+    end_total_minutes = end_hour * 60 + end_minute
+    
+    if end_total_minutes <= start_total_minutes:
+        raise ValueError('结束时间必须晚于起始时间（暂不支持跨天）')
+    
+    window_minutes = end_total_minutes - start_total_minutes
+    max_delay_seconds = window_minutes * 60
+    
+    # 构造标准 Cron（使用窗口开始时间）
+    standard_cron = f'{start_minute} {start_hour} {rest}'
+    
+    return standard_cron, max_delay_seconds
+
+
+def execute_checkin_with_random_delay(account_id: int, max_delay_seconds: Optional[int] = None):
+    """
+    带随机延迟的签到执行包装函数
+    
+    Args:
+        account_id: 账号ID
+        max_delay_seconds: 最大随机延迟秒数，None 表示立即执行
+    """
+    if max_delay_seconds:
+        # 随机延迟 0 到 max_delay_seconds 秒
+        delay = random.randint(0, max_delay_seconds)
+        logger.info(f'账号 {account_id} 将在 {delay} 秒后执行签到（随机延迟）')
+        time.sleep(delay)
+    
+    # 执行签到
+    execute_checkin(account_id)
 
 
 def send_webhook_notification(account_name: str, status: str, response_code: int = None, message: str = '', response_body: str = None):
@@ -310,9 +379,13 @@ def add_job(account_id: int, cron_expr: str):
     """
     添加定时任务
     
+    支持标准 Cron 和随机时间窗口语法：
+    - 标准: "0 8 * * *" → 每天 8:00 执行
+    - 随机: "R(09:00-09:30) * * *" → 每天 9:00-9:30 随机执行
+    
     Args:
         account_id: 账号ID
-        cron_expr: Cron 表达式（如 "0 8 * * *"）
+        cron_expr: Cron 表达式
     """
     job_id = f'account_{account_id}'
     
@@ -320,16 +393,31 @@ def add_job(account_id: int, cron_expr: str):
     if scheduler.get_job(job_id):
         scheduler.remove_job(job_id)
     
-    # 解析 Cron 表达式
-    parts = cron_expr.split()
+    # 解析 Cron 表达式（支持随机时间窗口）
+    standard_cron, max_delay_seconds = parse_random_cron(cron_expr)
+    
+    # 解析标准 Cron 表达式
+    parts = standard_cron.split()
     if len(parts) != 5:
         raise ValueError('Cron 表达式格式错误，应为 5 个字段（分 时 日 月 周）')
     
     minute, hour, day, month, day_of_week = parts
     
+    # 根据是否有随机延迟选择执行函数
+    if max_delay_seconds:
+        # 随机模式：使用带延迟的包装函数
+        func = execute_checkin_with_random_delay
+        args = [account_id, max_delay_seconds]
+        logger.info(f'已添加随机定时任务: account_id={account_id}, cron={cron_expr}, 随机窗口={max_delay_seconds}秒')
+    else:
+        # 标准模式：直接执行
+        func = execute_checkin
+        args = [account_id]
+        # logger.info(f'已添加定时任务: account_id={account_id}, cron={cron_expr}')
+    
     # 添加新任务
     scheduler.add_job(
-        func=execute_checkin,
+        func=func,
         trigger=CronTrigger(
             minute=minute,
             hour=hour,
@@ -337,12 +425,10 @@ def add_job(account_id: int, cron_expr: str):
             month=month,
             day_of_week=day_of_week
         ),
-        args=[account_id],
+        args=args,
         id=job_id,
         replace_existing=True
     )
-    
-   # logger.info(f'已添加定时任务: account_id={account_id}, cron={cron_expr}')
 
 
 def remove_job(account_id: int):
@@ -381,7 +467,60 @@ def start_scheduler():
     if not scheduler.running:
         scheduler.start()
         reload_all_jobs()
-       # logger.info('调度器已启动')
+        
+        # 添加自动清理任务（每天凌晨 3:00 执行）
+        scheduler.add_job(
+            func=auto_clean_logs,
+            trigger=CronTrigger(hour=3, minute=0),
+            id='auto_clean_logs',
+            replace_existing=True
+        )
+        logger.info('调度器已启动，自动清理任务已添加')
+
+
+def auto_clean_logs():
+    """自动清理超出限制的签到记录"""
+    db.connect(reuse_if_open=True)
+    
+    try:
+        # 检查是否启用自动清理
+        auto_clean_config = Config.get_or_none(Config.key == 'auto_clean_logs')
+        if not auto_clean_config or auto_clean_config.value != 'true':
+            logger.info('自动清理未启用，跳过')
+            return
+        
+        # 获取最大记录数
+        max_logs_config = Config.get_or_none(Config.key == 'max_logs_count')
+        max_logs = int(max_logs_config.value) if max_logs_config else 500
+        
+        # 获取当前记录总数
+        total_logs = CheckinLog.select().count()
+        
+        if total_logs <= max_logs:
+            logger.info(f'当前记录数 {total_logs} 未超过限制 {max_logs}，无需清理')
+            return
+        
+        # 计算需要删除的记录数
+        to_delete = total_logs - max_logs
+        
+        # 获取最旧的 N 条记录的 ID
+        old_logs = (CheckinLog
+                    .select(CheckinLog.id)
+                    .order_by(CheckinLog.executed_at.asc())
+                    .limit(to_delete))
+        
+        old_ids = [log.id for log in old_logs]
+        
+        # 删除这些记录
+        deleted = CheckinLog.delete().where(CheckinLog.id.in_(old_ids)).execute()
+        
+        logger.info(f'自动清理完成：删除了 {deleted} 条旧记录，保留最新 {max_logs} 条')
+        
+    except Exception as e:
+        logger.error(f'自动清理失败: {e}')
+    
+    finally:
+        db.close()
 
 
 def stop_scheduler():

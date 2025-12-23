@@ -12,6 +12,7 @@
             <h1>签到管理系统</h1>
             <div class="header-actions">
                 <button onclick="loadStats()" class="btn btn-secondary">刷新统计</button>
+                <button onclick="showSystemSettingsModal()" class="btn btn-secondary">系统设置</button>
                 <a href="{{ url_for('logout') }}" class="btn btn-secondary">退出登录</a>
             </div>
         </header>
@@ -168,6 +169,7 @@
                 </div>
             </div>
         </section>
+
     </div>
 
     <!-- 添加/编辑账号模态框 -->
@@ -194,7 +196,16 @@
                     <div class="form-group">
                         <label for="cronExpr">Cron 表达式 *</label>
                         <input type="text" id="cronExpr" value="0 8 * * *" required>
-                        <small>格式：分 时 日 月 周（例如：0 8 * * * 表示每天8点）</small>
+                        <small style="display: block; margin-top: 5px;">
+                            <strong>支持两种格式：</strong><br>
+                            <strong>1. 标准 Cron：</strong>分 时 日 月 周<br>
+                            &nbsp;&nbsp;&nbsp;• <code>0 8 * * *</code> → 每天 8:00 执行<br>
+                            &nbsp;&nbsp;&nbsp;• <code>30 14 * * 1-5</code> → 每周一到周五 14:30 执行<br>
+                            <strong>2. 随机时间窗口：</strong>R(开始时间-结束时间) 日 月 周<br>
+                            &nbsp;&nbsp;&nbsp;• <code>R(09:00-09:30) * * *</code> → 每天 9:00-9:30 之间随机执行<br>
+                            &nbsp;&nbsp;&nbsp;• <code>R(08:00-08:15) * * 1-5</code> → 每周一到周五 8:00-8:15 随机执行<br>
+                            &nbsp;&nbsp;&nbsp;• <code>R(20:00-22:00) 1 * *</code> → 每月1号 20:00-22:00 随机执行
+                        </small>
                     </div>
 
                     <div class="form-row">
@@ -238,6 +249,63 @@
         </div>
     </div>
 
+    <!-- 系统设置模态框 -->
+    <div id="systemSettingsModal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h3>系统设置</h3>
+                <span class="close" onclick="closeSystemSettingsModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <!-- 修改密码 -->
+                <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                    <h4 style="margin-top: 0;">修改管理员密码</h4>
+                    
+                    <div class="form-group">
+                        <label for="oldPassword">旧密码 *</label>
+                        <input type="password" id="oldPassword" placeholder="请输入旧密码">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="newPassword">新密码 *</label>
+                        <input type="password" id="newPassword" placeholder="请输入新密码（至少6位）">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="confirmPassword">确认新密码 *</label>
+                        <input type="password" id="confirmPassword" placeholder="请再次输入新密码">
+                    </div>
+
+                    <button onclick="changePassword()" class="btn btn-primary">修改密码</button>
+                </div>
+
+                <!-- 自动清理配置 -->
+                <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                    <h4 style="margin-top: 0;">签到记录自动清理</h4>
+                    
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="autoCleanLogs">
+                            启用自动清理
+                        </label>
+                        <small>启用后，每天凌晨 3:00 自动清理超出限制的旧记录</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="maxLogsCount">最大记录数</label>
+                        <input type="number" id="maxLogsCount" value="500" min="100" max="10000">
+                        <small>保留最新的 N 条签到记录，超出部分将被自动清理（最小 100 条）</small>
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button onclick="closeSystemSettingsModal()" class="btn btn-secondary">取消</button>
+                    <button onclick="saveSystemConfig()" class="btn btn-primary">保存配置</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         // 全局变量
         let currentPage = 1;
@@ -265,6 +333,21 @@
         // 关闭响应详情模态框
         function closeResponseModal() {
             document.getElementById('responseModal').style.display = 'none';
+        }
+
+        // 显示系统设置模态框
+        function showSystemSettingsModal() {
+            loadSystemConfig();
+            document.getElementById('systemSettingsModal').style.display = 'block';
+        }
+
+        // 关闭系统设置模态框
+        function closeSystemSettingsModal() {
+            document.getElementById('systemSettingsModal').style.display = 'none';
+            // 清空密码字段
+            document.getElementById('oldPassword').value = '';
+            document.getElementById('newPassword').value = '';
+            document.getElementById('confirmPassword').value = '';
         }
 
         // 页面加载时初始化
@@ -559,11 +642,16 @@
         window.onclick = function(event) {
             const accountModal = document.getElementById('accountModal');
             const responseModal = document.getElementById('responseModal');
+            const systemSettingsModal = document.getElementById('systemSettingsModal');
+            
             if (event.target === accountModal) {
                 closeModal();
             }
             if (event.target === responseModal) {
                 closeResponseModal();
+            }
+            if (event.target === systemSettingsModal) {
+                closeSystemSettingsModal();
             }
         }
 
@@ -742,6 +830,107 @@
             } finally {
                 // 清空文件选择，允许重复导入同一文件
                 event.target.value = '';
+            }
+        }
+        // 加载系统配置
+        async function loadSystemConfig() {
+            try {
+                const res = await fetch('/api/system/config');
+                const data = await res.json();
+
+                if (data.success) {
+                    document.getElementById('autoCleanLogs').checked = data.data.auto_clean_logs || false;
+                    document.getElementById('maxLogsCount').value = data.data.max_logs_count || 500;
+                }
+            } catch (error) {
+                console.error('加载系统配置失败:', error);
+            }
+        }
+
+        // 保存系统配置
+        async function saveSystemConfig() {
+            const config = {
+                auto_clean_logs: document.getElementById('autoCleanLogs').checked,
+                max_logs_count: parseInt(document.getElementById('maxLogsCount').value)
+            };
+
+            // 验证最大记录数
+            if (config.max_logs_count < 100) {
+                alert('最大记录数不能小于 100');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/system/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(config)
+                });
+
+                const data = await res.json();
+
+                if (data.success) {
+                    alert('系统配置保存成功');
+                    closeSystemSettingsModal();
+                } else {
+                    alert('保存失败: ' + data.message);
+                }
+            } catch (error) {
+                alert('保存失败: ' + error.message);
+            }
+        }
+
+        // 修改密码
+        async function changePassword() {
+            const oldPassword = document.getElementById('oldPassword').value;
+            const newPassword = document.getElementById('newPassword').value;
+            const confirmPassword = document.getElementById('confirmPassword').value;
+
+            // 验证输入
+            if (!oldPassword || !newPassword || !confirmPassword) {
+                alert('请填写所有密码字段');
+                return;
+            }
+
+            if (newPassword.length < 6) {
+                alert('新密码长度不能少于 6 位');
+                return;
+            }
+
+            if (newPassword !== confirmPassword) {
+                alert('两次输入的新密码不一致');
+                return;
+            }
+
+            if (!confirm('确定要修改管理员密码吗？修改后需要重新登录。')) {
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/system/password', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        old_password: oldPassword,
+                        new_password: newPassword
+                    })
+                });
+
+                const data = await res.json();
+
+                if (data.success) {
+                    alert(data.message);
+                    // 清空密码字段
+                    document.getElementById('oldPassword').value = '';
+                    document.getElementById('newPassword').value = '';
+                    document.getElementById('confirmPassword').value = '';
+                    // 跳转到登录页
+                    window.location.href = '/logout';
+                } else {
+                    alert('修改失败: ' + data.message);
+                }
+            } catch (error) {
+                alert('修改失败: ' + error.message);
             }
         }
     </script>

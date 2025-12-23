@@ -103,9 +103,9 @@ def create_account():
         # 验证 Cron 表达式（在创建账号前）
         if data.get('enabled', True):
             try:
-                parts = data['cron_expr'].split()
-                if len(parts) != 5:
-                    raise ValueError('Cron 表达式格式错误，应为 5 个字段（分 时 日 月 周）')
+                from scheduler import parse_random_cron
+                # 使用 parse_random_cron 验证（支持随机语法）
+                parse_random_cron(data['cron_expr'])
             except Exception as e:
                 return jsonify({'success': False, 'message': f'Cron 表达式错误: {e}'}), 400
 
@@ -577,6 +577,109 @@ def test_webhook():
             'success': False,
             'message': f'测试失败: {str(e)}'
         }), 500
+
+    finally:
+        db.close()
+
+
+@app.route('/api/system/config', methods=['GET'])
+@login_required
+def get_system_config():
+    """获取系统配置"""
+    db.connect(reuse_if_open=True)
+
+    try:
+        # 获取配置
+        auto_clean_config = Config.get_or_none(Config.key == 'auto_clean_logs')
+        max_logs_config = Config.get_or_none(Config.key == 'max_logs_count')
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'auto_clean_logs': auto_clean_config.value == 'true' if auto_clean_config else False,
+                'max_logs_count': int(max_logs_config.value) if max_logs_config else 500
+            }
+        })
+
+    finally:
+        db.close()
+
+
+@app.route('/api/system/config', methods=['POST'])
+@login_required
+def save_system_config():
+    """保存系统配置"""
+    data = request.get_json()
+
+    db.connect(reuse_if_open=True)
+
+    try:
+        from datetime import datetime
+
+        # 保存自动清理配置
+        if 'auto_clean_logs' in data:
+            Config.replace(
+                key='auto_clean_logs',
+                value='true' if data['auto_clean_logs'] else 'false',
+                updated_at=datetime.now()
+            ).execute()
+
+        # 保存最大记录数配置
+        if 'max_logs_count' in data:
+            max_logs = int(data['max_logs_count'])
+            if max_logs < 100:
+                return jsonify({'success': False, 'message': '最大记录数不能小于 100'}), 400
+            
+            Config.replace(
+                key='max_logs_count',
+                value=str(max_logs),
+                updated_at=datetime.now()
+            ).execute()
+
+        return jsonify({
+            'success': True,
+            'message': '系统配置保存成功'
+        })
+
+    finally:
+        db.close()
+
+
+@app.route('/api/system/password', methods=['POST'])
+@login_required
+def change_password():
+    """修改管理员密码"""
+    data = request.get_json()
+
+    # 验证必填字段
+    if not data.get('old_password') or not data.get('new_password'):
+        return jsonify({'success': False, 'message': '缺少必填字段'}), 400
+
+    db.connect(reuse_if_open=True)
+
+    try:
+        from datetime import datetime
+        from auth import check_password
+
+        # 验证旧密码
+        if not check_password(data['old_password']):
+            return jsonify({'success': False, 'message': '旧密码错误'}), 400
+
+        # 验证新密码长度
+        if len(data['new_password']) < 6:
+            return jsonify({'success': False, 'message': '新密码长度不能少于 6 位'}), 400
+
+        # 更新密码
+        Config.replace(
+            key='admin_password',
+            value=data['new_password'],
+            updated_at=datetime.now()
+        ).execute()
+
+        return jsonify({
+            'success': True,
+            'message': '密码修改成功，请重新登录'
+        })
 
     finally:
         db.close()

@@ -1,4 +1,4 @@
-#!D:\python\acgo\myvenv\Scripts\python.exe
+#!D:\work\pythonProject\acGo\myvenv\Scripts\python.exe
 
 import datetime
 import os
