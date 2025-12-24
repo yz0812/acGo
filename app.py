@@ -511,35 +511,30 @@ def save_webhook_config():
         from datetime import datetime
 
         # 保存或更新配置
-        Config.replace(
-            key='webhook_enabled',
+        Config.update(
             value='true' if data.get('enabled') else 'false',
             updated_at=datetime.now()
-        ).execute()
+        ).where(Config.key == 'webhook_enabled').execute()
 
-        Config.replace(
-            key='webhook_include_response',
+        Config.update(
             value='true' if data.get('include_response') else 'false',
             updated_at=datetime.now()
-        ).execute()
+        ).where(Config.key == 'webhook_include_response').execute()
 
-        Config.replace(
-            key='webhook_url',
+        Config.update(
             value=data.get('url', ''),
             updated_at=datetime.now()
-        ).execute()
+        ).where(Config.key == 'webhook_url').execute()
 
-        Config.replace(
-            key='webhook_method',
+        Config.update(
             value=data.get('method', 'POST'),
             updated_at=datetime.now()
-        ).execute()
+        ).where(Config.key == 'webhook_method').execute()
 
-        Config.replace(
-            key='webhook_headers',
+        Config.update(
             value=data.get('headers', ''),
             updated_at=datetime.now()
-        ).execute()
+        ).where(Config.key == 'webhook_headers').execute()
 
         return jsonify({
             'success': True,
@@ -734,11 +729,10 @@ def save_system_config():
 
         # 保存自动清理配置
         if 'auto_clean_logs' in data:
-            Config.replace(
-                key='auto_clean_logs',
+            Config.update(
                 value='true' if data['auto_clean_logs'] else 'false',
                 updated_at=datetime.now()
-            ).execute()
+            ).where(Config.key == 'auto_clean_logs').execute()
 
         # 保存最大记录数配置
         if 'max_logs_count' in data:
@@ -746,11 +740,10 @@ def save_system_config():
             if max_logs < 100:
                 return jsonify({'success': False, 'message': '最大记录数不能小于 100'}), 400
             
-            Config.replace(
-                key='max_logs_count',
+            Config.update(
                 value=str(max_logs),
                 updated_at=datetime.now()
-            ).execute()
+            ).where(Config.key == 'max_logs_count').execute()
 
         return jsonify({
             'success': True,
@@ -786,11 +779,10 @@ def change_password():
             return jsonify({'success': False, 'message': '新密码长度不能少于 6 位'}), 400
 
         # 更新密码
-        Config.replace(
-            key='admin_password',
+        Config.update(
             value=data['new_password'],
             updated_at=datetime.now()
-        ).execute()
+        ).where(Config.key == 'admin_password').execute()
 
         return jsonify({
             'success': True,
