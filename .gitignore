@@ -57,3 +57,10 @@ htmlcov/
 
 # Claude Code
 .claude/
+
+myvenv/*
+myvenv
+.github/*
+.github
+.serena/*
+.serena

@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional, Tuple
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from models import Account, CheckinLog, Config, db
+from .models import Account, CheckinLog, Config, db
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)

@@ -1,7 +1,7 @@
 """认证模块"""
 from functools import wraps
 from flask import session, redirect, url_for, request
-from models import Config, db
+from .models import Config, db
 
 
 def login_required(f):

@@ -326,43 +326,48 @@
                 <h3>请求详情监视器</h3>
                 <span class="close" onclick="closeRequestPreviewModal()">&times;</span>
             </div>
-            <div class="modal-body" style="overflow-y: auto; flex: 1;">
-                <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 15px;">
-                    <h4 style="margin: 0 0 10px 0; color: #333;">请求方式</h4>
-                    <div style="background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ddd;">
-                        <code id="previewMethod" style="font-size: 14px; color: #007bff; font-weight: bold;">-</code>
+            <div class="modal-body" style="overflow-y: auto; flex: 1; padding: 20px;">
+                <!-- 请求方式 -->
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                        <span style="font-weight: 600; color: #555; font-size: 13px; text-transform: uppercase;">Method</span>
+                    </div>
+                    <div style="background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace;">
+                        <code id="previewMethod" style="font-size: 14px; color: #0969da; font-weight: 600;">-</code>
                     </div>
                 </div>
 
-                <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 15px;">
-                    <h4 style="margin: 0 0 10px 0; color: #333;">请求地址</h4>
-                    <div style="background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ddd; word-break: break-all;">
-                        <code id="previewUrl" style="font-size: 13px; color: #28a745;">-</code>
+                <!-- 请求地址 -->
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                        <span style="font-weight: 600; color: #555; font-size: 13px; text-transform: uppercase;">URL</span>
+                    </div>
+                    <div style="background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; word-break: break-all;">
+                        <code id="previewUrl" style="font-size: 13px; color: #1f883d;">-</code>
                     </div>
                 </div>
 
-                <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 15px;">
-                    <h4 style="margin: 0 0 10px 0; color: #333;">请求头 (Headers)</h4>
-                    <div style="background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ddd; max-height: 200px; overflow-y: auto;">
-                        <pre id="previewHeaders" style="margin: 0; font-size: 13px; white-space: pre-wrap; word-wrap: break-word;">-</pre>
+                <!-- 请求头 -->
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                        <span style="font-weight: 600; color: #555; font-size: 13px; text-transform: uppercase;">Headers</span>
+                    </div>
+                    <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 14px; max-height: 250px; overflow-y: auto;">
+                        <pre id="previewHeaders" style="margin: 0; font-size: 13px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; color: #c9d1d9; white-space: pre-wrap; word-wrap: break-word; line-height: 1.6;">-</pre>
                     </div>
                 </div>
 
-                <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 15px;">
-                    <h4 style="margin: 0 0 10px 0; color: #333;">Cookies</h4>
-                    <div style="background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ddd; max-height: 150px; overflow-y: auto;">
-                        <pre id="previewCookies" style="margin: 0; font-size: 13px; white-space: pre-wrap; word-wrap: break-word;">-</pre>
+                <!-- 请求体 -->
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                        <span style="font-weight: 600; color: #555; font-size: 13px; text-transform: uppercase;">Body</span>
+                    </div>
+                    <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 14px; max-height: 250px; overflow-y: auto;">
+                        <pre id="previewData" style="margin: 0; font-size: 13px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; color: #c9d1d9; white-space: pre-wrap; word-wrap: break-word; line-height: 1.6;">-</pre>
                     </div>
                 </div>
 
-                <div style="background: #f9f9f9; padding: 20px; border-radius: 8px;">
-                    <h4 style="margin: 0 0 10px 0; color: #333;">请求体 (Data)</h4>
-                    <div style="background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ddd; max-height: 200px; overflow-y: auto;">
-                        <pre id="previewData" style="margin: 0; font-size: 13px; white-space: pre-wrap; word-wrap: break-word;">-</pre>
-                    </div>
-                </div>
-
-                <div style="margin-top: 20px; text-align: right;">
+                <div style="text-align: right; margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb;">
                     <button onclick="closeRequestPreviewModal()" class="btn btn-secondary">关闭</button>
                 </div>
             </div>
@@ -1026,29 +1031,26 @@
                     // 填充请求地址
                     document.getElementById('previewUrl').textContent = preview.url;
 
-                    // 填充请求头
+                    // 填充请求头（包含 Cookies）
                     const headersEl = document.getElementById('previewHeaders');
+                    let headersText = '';
+
+                    // 先添加普通请求头
                     if (preview.headers && Object.keys(preview.headers).length > 0) {
-                        let headersText = '';
                         for (const [key, value] of Object.entries(preview.headers)) {
                             headersText += `${key}: ${value}\n`;
                         }
-                        headersEl.textContent = headersText.trim();
-                    } else {
-                        headersEl.textContent = '无';
                     }
 
-                    // 填充 Cookies
-                    const cookiesEl = document.getElementById('previewCookies');
+                    // 将 Cookies 转换为 Cookie 请求头并添加
                     if (preview.cookies && Object.keys(preview.cookies).length > 0) {
-                        let cookiesText = '';
-                        for (const [key, value] of Object.entries(preview.cookies)) {
-                            cookiesText += `${key} = ${value}\n`;
-                        }
-                        cookiesEl.textContent = cookiesText.trim();
-                    } else {
-                        cookiesEl.textContent = '无';
+                        const cookieHeader = Object.entries(preview.cookies)
+                            .map(([k, v]) => `${k}=${v}`)
+                            .join('; ');
+                        headersText += `Cookie: ${cookieHeader}\n`;
                     }
+
+                    headersEl.textContent = headersText.trim() || '无';
 
                     // 填充请求体
                     const dataEl = document.getElementById('previewData');
@@ -1097,29 +1099,26 @@
                     // 填充请求地址
                     document.getElementById('previewUrl').textContent = preview.url || '未记录';
 
-                    // 填充请求头
+                    // 填充请求头（包含 Cookies）
                     const headersEl = document.getElementById('previewHeaders');
+                    let headersText = '';
+
+                    // 先添加普通请求头
                     if (preview.headers && Object.keys(preview.headers).length > 0) {
-                        let headersText = '';
                         for (const [key, value] of Object.entries(preview.headers)) {
                             headersText += `${key}: ${value}\n`;
                         }
-                        headersEl.textContent = headersText.trim();
-                    } else {
-                        headersEl.textContent = '无';
                     }
 
-                    // 填充 Cookies
-                    const cookiesEl = document.getElementById('previewCookies');
+                    // 将 Cookies 转换为 Cookie 请求头并添加
                     if (preview.cookies && Object.keys(preview.cookies).length > 0) {
-                        let cookiesText = '';
-                        for (const [key, value] of Object.entries(preview.cookies)) {
-                            cookiesText += `${key} = ${value}\n`;
-                        }
-                        cookiesEl.textContent = cookiesText.trim();
-                    } else {
-                        cookiesEl.textContent = '无';
+                        const cookieHeader = Object.entries(preview.cookies)
+                            .map(([k, v]) => `${k}=${v}`)
+                            .join('; ');
+                        headersText += `Cookie: ${cookieHeader}\n`;
                     }
+
+                    headersEl.textContent = headersText.trim() || '无';
 
                     // 填充请求体
                     const dataEl = document.getElementById('previewData');

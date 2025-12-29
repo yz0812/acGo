@@ -13,8 +13,8 @@ from peewee import (
     ForeignKeyField,
 )
 
-# 确保数据目录存在
-DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
+# 确保数据目录存在（指向项目根目录的 data/）
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # 数据库实例

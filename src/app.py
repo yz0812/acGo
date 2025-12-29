@@ -3,18 +3,27 @@ import os
 import json
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
-from models import Account, CheckinLog, Config, db, init_db
-from auth import login_required, check_password
-from scheduler import (
+from .models import Account, CheckinLog, Config, db, init_db
+from .auth import login_required, check_password
+from .scheduler import (
     start_scheduler,
     stop_scheduler,
     add_job,
     remove_job,
     execute_checkin,
-    parse_curl_command
+    parse_curl_command,
+    parse_random_cron
 )
 
-app = Flask(__name__)
+# 获取项目根目录（src 的父目录）
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 创建 Flask 应用，指定模板和静态文件路径
+app = Flask(
+    __name__,
+    template_folder=os.path.join(BASE_DIR, 'templates'),
+    static_folder=os.path.join(BASE_DIR, 'static')
+)
 app.secret_key = os.getenv('SECRET_KEY', 'a8f5f167f44f4964e6c998dee827110c5b92c0f8d1e3a7b2c4f6e8d0a2b4c6e8')
 
 # 初始化数据库
@@ -104,7 +113,6 @@ def create_account():
         # 验证 Cron 表达式（在创建账号前）
         if data.get('enabled', True):
             try:
-                from scheduler import parse_random_cron
                 # 使用 parse_random_cron 验证（支持随机语法）
                 parse_random_cron(data['cron_expr'])
             except Exception as e:
@@ -841,7 +849,6 @@ def change_password():
 
     try:
         from datetime import datetime
-        from auth import check_password
 
         # 验证旧密码
         if not check_password(data['old_password']):
