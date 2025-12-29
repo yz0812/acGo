@@ -213,6 +213,37 @@ def delete_account(account_id):
         db.close()
 
 
+@app.route('/api/accounts/<int:account_id>/preview', methods=['GET'])
+@login_required
+def preview_account_request(account_id):
+    """预览账号的请求详情"""
+    db.connect(reuse_if_open=True)
+
+    try:
+        account = Account.get_by_id(account_id)
+
+        # 解析 curl 命令
+        req_params = parse_curl_command(account.curl_command)
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'method': req_params['method'],
+                'url': req_params['url'],
+                'headers': req_params['headers'],
+                'cookies': req_params['cookies'],
+                'data': req_params['data']
+            }
+        })
+
+    except Account.DoesNotExist:
+        return jsonify({'success': False, 'message': '账号不存在'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'解析失败: {str(e)}'}), 400
+    finally:
+        db.close()
+
+
 @app.route('/api/accounts/export', methods=['GET'])
 @login_required
 def export_accounts():
@@ -348,19 +379,19 @@ def import_accounts():
 def manual_checkin(account_id):
     """手动立即签到"""
     db.connect(reuse_if_open=True)
-    
+
     try:
         account = Account.get_by_id(account_id)
-        
-        # 执行签到
-        result = execute_checkin(account_id)
-        
+
+        # 执行签到（手动签到时跳过禁用状态检查）
+        result = execute_checkin(account_id, skip_enabled_check=True)
+
         return jsonify({
             'success': result['status'] == 'success',
             'message': '签到成功' if result['status'] == 'success' else '签到失败',
             'data': result
         })
-        
+
     except Account.DoesNotExist:
         return jsonify({'success': False, 'message': '账号不存在'}), 404
     finally:
@@ -373,20 +404,30 @@ def get_logs():
     """获取签到日志"""
     page = int(request.args.get('page', 1))
     page_size = int(request.args.get('page_size', 50))
-    
+    status_filter = request.args.get('status', '')  # 状态筛选：'' (全部) / 'success' / 'failed'
+
     db.connect(reuse_if_open=True)
-    
+
     try:
+        # 构建查询
+        query = (CheckinLog
+                 .select(CheckinLog, Account)
+                 .join(Account)
+                 .order_by(CheckinLog.executed_at.desc()))
+
+        # 应用状态筛选
+        if status_filter:
+            query = query.where(CheckinLog.status == status_filter)
+
         # 分页查询
-        logs = (CheckinLog
-                .select(CheckinLog, Account)
-                .join(Account)
-                .order_by(CheckinLog.executed_at.desc())
-                .paginate(page, page_size))
-        
-        # 总数
-        total = CheckinLog.select().count()
-        
+        logs = query.paginate(page, page_size)
+
+        # 总数（根据筛选条件）
+        if status_filter:
+            total = CheckinLog.select().where(CheckinLog.status == status_filter).count()
+        else:
+            total = CheckinLog.select().count()
+
         data = [{
             'id': log.id,
             'account_name': log.account.name,
@@ -396,7 +437,7 @@ def get_logs():
             'error_message': log.error_message,
             'executed_at': log.executed_at.strftime('%Y-%m-%d %H:%M:%S')
         } for log in logs]
-        
+
         return jsonify({
             'success': True,
             'data': data,
@@ -404,7 +445,39 @@ def get_logs():
             'page': page,
             'page_size': page_size
         })
-        
+
+    finally:
+        db.close()
+
+
+@app.route('/api/logs/<int:log_id>/preview', methods=['GET'])
+@login_required
+def preview_log_request(log_id):
+    """预览日志的请求详情"""
+    db.connect(reuse_if_open=True)
+
+    try:
+        log = CheckinLog.get_by_id(log_id)
+
+        # 解析 JSON 字符串
+        headers = json.loads(log.request_headers) if log.request_headers else {}
+        cookies = json.loads(log.request_cookies) if log.request_cookies else {}
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'method': log.request_method,
+                'url': log.request_url,
+                'headers': headers,
+                'cookies': cookies,
+                'data': log.request_data
+            }
+        })
+
+    except CheckinLog.DoesNotExist:
+        return jsonify({'success': False, 'message': '日志不存在'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'获取详情失败: {str(e)}'}), 400
     finally:
         db.close()
 

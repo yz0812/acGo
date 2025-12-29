@@ -71,16 +71,22 @@ def parse_curl_command(curl_cmd: str) -> Dict[str, Any]:
 
         # ========== 提取 Method ==========
         method = 'GET'
-        
-        # 支持多种格式
-        method_patterns = [
-            r"(?:-X|--request)\s+['\"]?([A-Z]+)['\"]?",  # -X POST 或 --request POST
-        ]
-        for pattern in method_patterns:
-            method_match = re.search(pattern, curl_cmd)
-            if method_match:
-                method = method_match.group(1).upper()
-                break
+
+        # 先检查非标准格式: curl METHOD URL (例如 curl POST 'https://...')
+        non_standard_pattern = r"^curl\s+([A-Z]+)\s+['\"]?https?://"
+        non_standard_match = re.search(non_standard_pattern, curl_cmd)
+        if non_standard_match:
+            method = non_standard_match.group(1).upper()
+        else:
+            # 标准格式: -X POST 或 --request POST
+            method_patterns = [
+                r"(?:-X|--request)\s+['\"]?([A-Z]+)['\"]?",
+            ]
+            for pattern in method_patterns:
+                method_match = re.search(pattern, curl_cmd)
+                if method_match:
+                    method = method_match.group(1).upper()
+                    break
 
         # ========== 提取 Headers ==========
         headers = {}
@@ -137,15 +143,20 @@ def parse_curl_command(curl_cmd: str) -> Dict[str, Any]:
 
         # ========== 提取 Data ==========
         data = None
-        
+
         # 支持多种格式: -d, --data, --data-raw, --data-binary, --data-urlencode
+        # 改进：分别处理单引号和双引号，避免 JSON 内部引号干扰
         data_patterns = [
-            r"(?:--data-raw)\s+['\"](.+?)['\"]",           # --data-raw 'data'
-            r"(?:--data-binary)\s+['\"](.+?)['\"]",        # --data-binary 'data'
-            r"(?:--data|--data-urlencode)\s+['\"](.+?)['\"]",  # --data 'data'
-            r"(?:-d)\s+['\"](.+?)['\"]",                   # -d 'data'
+            r"(?:--data-raw)\s+'([^']*)'",          # --data-raw '...' (单引号包裹)
+            r'(?:--data-raw)\s+"([^"]*)"',          # --data-raw "..." (双引号包裹)
+            r"(?:--data-binary)\s+'([^']*)'",       # --data-binary '...'
+            r'(?:--data-binary)\s+"([^"]*)"',       # --data-binary "..."
+            r"(?:--data|--data-urlencode)\s+'([^']*)'",  # --data '...'
+            r'(?:--data|--data-urlencode)\s+"([^"]*)"',  # --data "..."
+            r"(?:-d)\s+'([^']*)'",                  # -d '...'
+            r'(?:-d)\s+"([^"]*)"',                  # -d "..."
         ]
-        
+
         for pattern in data_patterns:
             data_match = re.search(pattern, curl_cmd, re.DOTALL)
             if data_match:
@@ -355,32 +366,33 @@ def send_webhook_notification(account_name: str, status: str, response_code: int
         logger.error(f'Webhook 通知异常: {e}')
 
 
-def execute_checkin(account_id: int, retry_attempt: int = 0) -> Dict[str, Any]:
+def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check: bool = False) -> Dict[str, Any]:
     """
     执行签到任务
-    
+
     Args:
         account_id: 账号ID
         retry_attempt: 当前重试次数
-        
+        skip_enabled_check: 是否跳过禁用状态检查（手动签到时为 True）
+
     Returns:
         执行结果字典
     """
     db.connect(reuse_if_open=True)
-    
+
     try:
         account = Account.get_by_id(account_id)
-        
-        if not account.enabled:
+
+        if not skip_enabled_check and not account.enabled:
            # logger.info(f'账号 {account.name} 已禁用，跳过签到')
             return {'status': 'skipped', 'message': '账号已禁用'}
         
         # 解析 curl 命令
         req_params = parse_curl_command(account.curl_command)
-        
+
         # 执行请求
        # logger.info(f'开始执行签到: {account.name} (尝试 {retry_attempt + 1}/{account.retry_count + 1})')
-        
+
         response = requests.request(
             method=req_params['method'],
             url=req_params['url'],
@@ -389,18 +401,24 @@ def execute_checkin(account_id: int, retry_attempt: int = 0) -> Dict[str, Any]:
             cookies=req_params['cookies'],
             timeout=30
         )
-        
+
         # 判断是否成功（2xx 状态码）
         is_success = 200 <= response.status_code < 300
-        
-        # 记录日志
+
+        # 记录日志（保存请求参数）
         log = CheckinLog.create(
             account=account,
             status='success' if is_success else 'failed',
             response_code=response.status_code,
             response_body=response.text[:5000],  # 限制长度（增加到5000字符）
             error_message=None if is_success else f'HTTP {response.status_code}',
-            executed_at=datetime.now()
+            executed_at=datetime.now(),
+            # 保存请求参数
+            request_method=req_params['method'],
+            request_url=req_params['url'],
+            request_headers=json.dumps(req_params['headers'], ensure_ascii=False) if req_params['headers'] else None,
+            request_cookies=json.dumps(req_params['cookies'], ensure_ascii=False) if req_params['cookies'] else None,
+            request_data=req_params['data']
         )
         
         if is_success:
@@ -425,7 +443,7 @@ def execute_checkin(account_id: int, retry_attempt: int = 0) -> Dict[str, Any]:
             if retry_attempt < account.retry_count:
                 logger.warning(f'签到失败，{account.retry_interval}秒后重试: {account.name}')
                 time.sleep(account.retry_interval)
-                return execute_checkin(account_id, retry_attempt + 1)
+                return execute_checkin(account_id, retry_attempt + 1, skip_enabled_check)
             else:
                 logger.error(f'签到失败（已达重试上限）: {account.name}')
 
@@ -448,21 +466,27 @@ def execute_checkin(account_id: int, retry_attempt: int = 0) -> Dict[str, Any]:
         # 网络错误
         error_msg = str(e)
         logger.error(f'请求异常: {account.name} - {error_msg}')
-        
+
         CheckinLog.create(
             account=account,
             status='failed',
             response_code=None,
             response_body=None,
             error_message=error_msg[:500],
-            executed_at=datetime.now()
+            executed_at=datetime.now(),
+            # 保存请求参数
+            request_method=req_params.get('method'),
+            request_url=req_params.get('url'),
+            request_headers=json.dumps(req_params.get('headers', {}), ensure_ascii=False) if req_params.get('headers') else None,
+            request_cookies=json.dumps(req_params.get('cookies', {}), ensure_ascii=False) if req_params.get('cookies') else None,
+            request_data=req_params.get('data')
         )
         
         # 重试逻辑
         if retry_attempt < account.retry_count:
             logger.warning(f'网络异常，{account.retry_interval}秒后重试: {account.name}')
             time.sleep(account.retry_interval)
-            return execute_checkin(account_id, retry_attempt + 1)
+            return execute_checkin(account_id, retry_attempt + 1, skip_enabled_check)
 
         # 调用 Webhook
         send_webhook_notification(
@@ -477,13 +501,22 @@ def execute_checkin(account_id: int, retry_attempt: int = 0) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f'未知错误: {account.name} - {e}')
 
+        # 尝试获取 req_params，如果解析失败则为空
+        req_params_safe = locals().get('req_params', {})
+
         CheckinLog.create(
             account=account,
             status='failed',
             response_code=None,
             response_body=None,
             error_message=str(e)[:500],
-            executed_at=datetime.now()
+            executed_at=datetime.now(),
+            # 保存请求参数
+            request_method=req_params_safe.get('method'),
+            request_url=req_params_safe.get('url'),
+            request_headers=json.dumps(req_params_safe.get('headers', {}), ensure_ascii=False) if req_params_safe.get('headers') else None,
+            request_cookies=json.dumps(req_params_safe.get('cookies', {}), ensure_ascii=False) if req_params_safe.get('cookies') else None,
+            request_data=req_params_safe.get('data')
         )
 
         # 调用 Webhook

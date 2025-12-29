@@ -74,7 +74,12 @@
         <section class="section">
             <div class="section-header">
                 <h2>签到记录</h2>
-                <div style="display: flex; gap: 10px;">
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <select id="statusFilter" onchange="filterLogsByStatus()" style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer;">
+                        <option value="">全部状态</option>
+                        <option value="success">成功</option>
+                        <option value="failed">失败</option>
+                    </select>
                     <button onclick="loadLogs()" class="btn btn-secondary">刷新记录</button>
                     <button onclick="clearOldLogs()" class="btn btn-warning">清除7天前</button>
                     <button onclick="clearAllLogs()" class="btn btn-danger">清除全部</button>
@@ -92,10 +97,11 @@
                             <th>响应内容</th>
                             <th>错误信息</th>
                             <th>执行时间</th>
+                            <th>操作</th>
                         </tr>
                     </thead>
                     <tbody id="logsBody">
-                        <tr><td colspan="7" style="text-align:center;">加载中...</td></tr>
+                        <tr><td colspan="8" style="text-align:center;">加载中...</td></tr>
                     </tbody>
                 </table>
 
@@ -267,7 +273,7 @@
                 <!-- 修改密码 -->
                 <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
                     <h4 style="margin-top: 0;">修改管理员密码</h4>
-                    
+
                     <div class="form-group">
                         <label for="oldPassword">旧密码 *</label>
                         <input type="password" id="oldPassword" placeholder="请输入旧密码">
@@ -289,7 +295,7 @@
                 <!-- 自动清理配置 -->
                 <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
                     <h4 style="margin-top: 0;">签到记录自动清理</h4>
-                    
+
                     <div class="form-group">
                         <label>
                             <input type="checkbox" id="autoCleanLogs">
@@ -308,6 +314,56 @@
                 <div class="form-actions">
                     <button onclick="closeSystemSettingsModal()" class="btn btn-secondary">取消</button>
                     <button onclick="saveSystemConfig()" class="btn btn-primary">保存配置</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 请求详情模态框 -->
+    <div id="requestPreviewModal" class="modal">
+        <div class="modal-content" style="max-width: 800px; max-height: 90vh; display: flex; flex-direction: column;">
+            <div class="modal-header">
+                <h3>请求详情监视器</h3>
+                <span class="close" onclick="closeRequestPreviewModal()">&times;</span>
+            </div>
+            <div class="modal-body" style="overflow-y: auto; flex: 1;">
+                <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 15px;">
+                    <h4 style="margin: 0 0 10px 0; color: #333;">请求方式</h4>
+                    <div style="background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ddd;">
+                        <code id="previewMethod" style="font-size: 14px; color: #007bff; font-weight: bold;">-</code>
+                    </div>
+                </div>
+
+                <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 15px;">
+                    <h4 style="margin: 0 0 10px 0; color: #333;">请求地址</h4>
+                    <div style="background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ddd; word-break: break-all;">
+                        <code id="previewUrl" style="font-size: 13px; color: #28a745;">-</code>
+                    </div>
+                </div>
+
+                <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 15px;">
+                    <h4 style="margin: 0 0 10px 0; color: #333;">请求头 (Headers)</h4>
+                    <div style="background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ddd; max-height: 200px; overflow-y: auto;">
+                        <pre id="previewHeaders" style="margin: 0; font-size: 13px; white-space: pre-wrap; word-wrap: break-word;">-</pre>
+                    </div>
+                </div>
+
+                <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 15px;">
+                    <h4 style="margin: 0 0 10px 0; color: #333;">Cookies</h4>
+                    <div style="background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ddd; max-height: 150px; overflow-y: auto;">
+                        <pre id="previewCookies" style="margin: 0; font-size: 13px; white-space: pre-wrap; word-wrap: break-word;">-</pre>
+                    </div>
+                </div>
+
+                <div style="background: #f9f9f9; padding: 20px; border-radius: 8px;">
+                    <h4 style="margin: 0 0 10px 0; color: #333;">请求体 (Data)</h4>
+                    <div style="background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ddd; max-height: 200px; overflow-y: auto;">
+                        <pre id="previewData" style="margin: 0; font-size: 13px; white-space: pre-wrap; word-wrap: break-word;">-</pre>
+                    </div>
+                </div>
+
+                <div style="margin-top: 20px; text-align: right;">
+                    <button onclick="closeRequestPreviewModal()" class="btn btn-secondary">关闭</button>
                 </div>
             </div>
         </div>
@@ -335,22 +391,26 @@
 
             document.getElementById('responseContent').textContent = decoded;
             document.getElementById('responseModal').style.display = 'block';
+            document.body.style.overflow = 'hidden';  // 禁止背景滚动
         }
 
         // 关闭响应详情模态框
         function closeResponseModal() {
             document.getElementById('responseModal').style.display = 'none';
+            document.body.style.overflow = '';  // 恢复滚动
         }
 
         // 显示系统设置模态框
         function showSystemSettingsModal() {
             loadSystemConfig();
             document.getElementById('systemSettingsModal').style.display = 'block';
+            document.body.style.overflow = 'hidden';  // 禁止背景滚动
         }
 
         // 关闭系统设置模态框
         function closeSystemSettingsModal() {
             document.getElementById('systemSettingsModal').style.display = 'none';
+            document.body.style.overflow = '';  // 恢复滚动
             // 清空密码字段
             document.getElementById('oldPassword').value = '';
             document.getElementById('newPassword').value = '';
@@ -410,6 +470,7 @@
                             </td>
                             <td>${acc.created_at}</td>
                             <td>
+                                <button onclick="showRequestPreview(${acc.id})" class="btn btn-sm btn-secondary">查看详情</button>
                                 <button onclick="manualCheckin(${acc.id})" class="btn btn-sm btn-success">立即签到</button>
                                 <button onclick="editAccount(${acc.id})" class="btn btn-sm btn-primary">编辑</button>
                                 <button onclick="deleteAccount(${acc.id})" class="btn btn-sm btn-danger">删除</button>
@@ -427,14 +488,16 @@
             if (page < 1) return;
 
             try {
-                const res = await fetch(`/api/logs?page=${page}&page_size=10`);
+                const statusFilter = document.getElementById('statusFilter').value;
+                const url = `/api/logs?page=${page}&page_size=10${statusFilter ? '&status=' + statusFilter : ''}`;
+                const res = await fetch(url);
                 const data = await res.json();
 
                 if (data.success) {
                     const tbody = document.getElementById('logsBody');
 
                     if (data.data.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">暂无记录</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;">暂无记录</td></tr>';
                         document.getElementById('logsPagination').style.display = 'none';
                         return;
                     }
@@ -460,6 +523,9 @@
                                     : '-'}
                             </td>
                             <td>${log.executed_at}</td>
+                            <td>
+                                <button onclick="showLogRequestPreview(${log.id})" class="btn btn-sm btn-secondary">查看详情</button>
+                            </td>
                         </tr>
                     `).join('');
 
@@ -477,6 +543,11 @@
             }
         }
 
+        // 状态筛选
+        function filterLogsByStatus() {
+            loadLogsPage(1);  // 筛选后重置到第一页
+        }
+
         // 兼容旧的 loadLogs 函数
         function loadLogs() {
             loadLogsPage(1);
@@ -488,6 +559,7 @@
             document.getElementById('accountForm').reset();
             document.getElementById('accountId').value = '';
             document.getElementById('accountModal').style.display = 'block';
+            document.body.style.overflow = 'hidden';  // 禁止背景滚动
         }
 
         // 编辑账号
@@ -495,10 +567,10 @@
             try {
                 const res = await fetch('/api/accounts');
                 const data = await res.json();
-                
+
                 if (data.success) {
                     const account = data.data.find(acc => acc.id === id);
-                    
+
                     if (account) {
                         document.getElementById('modalTitle').textContent = '编辑账号';
                         document.getElementById('accountId').value = account.id;
@@ -509,6 +581,7 @@
                         document.getElementById('retryInterval').value = account.retry_interval;
                         document.getElementById('enabled').checked = account.enabled;
                         document.getElementById('accountModal').style.display = 'block';
+                        document.body.style.overflow = 'hidden';  // 禁止背景滚动
                     }
                 }
             } catch (error) {
@@ -519,6 +592,7 @@
         // 关闭模态框
         function closeModal() {
             document.getElementById('accountModal').style.display = 'none';
+            document.body.style.overflow = '';  // 恢复滚动
         }
 
         // 提交表单
@@ -642,7 +716,8 @@
             const accountModal = document.getElementById('accountModal');
             const responseModal = document.getElementById('responseModal');
             const systemSettingsModal = document.getElementById('systemSettingsModal');
-            
+            const requestPreviewModal = document.getElementById('requestPreviewModal');
+
             if (event.target === accountModal) {
                 closeModal();
             }
@@ -651,6 +726,9 @@
             }
             if (event.target === systemSettingsModal) {
                 closeSystemSettingsModal();
+            }
+            if (event.target === requestPreviewModal) {
+                closeRequestPreviewModal();
             }
         }
 
@@ -930,6 +1008,142 @@
                 }
             } catch (error) {
                 alert('修改失败: ' + error.message);
+            }
+        }
+
+        // 显示请求预览
+        async function showRequestPreview(accountId) {
+            try {
+                const res = await fetch(`/api/accounts/${accountId}/preview`);
+                const data = await res.json();
+
+                if (data.success) {
+                    const preview = data.data;
+
+                    // 填充请求方式
+                    document.getElementById('previewMethod').textContent = preview.method;
+
+                    // 填充请求地址
+                    document.getElementById('previewUrl').textContent = preview.url;
+
+                    // 填充请求头
+                    const headersEl = document.getElementById('previewHeaders');
+                    if (preview.headers && Object.keys(preview.headers).length > 0) {
+                        let headersText = '';
+                        for (const [key, value] of Object.entries(preview.headers)) {
+                            headersText += `${key}: ${value}\n`;
+                        }
+                        headersEl.textContent = headersText.trim();
+                    } else {
+                        headersEl.textContent = '无';
+                    }
+
+                    // 填充 Cookies
+                    const cookiesEl = document.getElementById('previewCookies');
+                    if (preview.cookies && Object.keys(preview.cookies).length > 0) {
+                        let cookiesText = '';
+                        for (const [key, value] of Object.entries(preview.cookies)) {
+                            cookiesText += `${key} = ${value}\n`;
+                        }
+                        cookiesEl.textContent = cookiesText.trim();
+                    } else {
+                        cookiesEl.textContent = '无';
+                    }
+
+                    // 填充请求体
+                    const dataEl = document.getElementById('previewData');
+                    if (preview.data) {
+                        // 尝试格式化 JSON
+                        try {
+                            const jsonData = JSON.parse(preview.data);
+                            dataEl.textContent = JSON.stringify(jsonData, null, 2);
+                        } catch (e) {
+                            // 不是 JSON，直接显示
+                            dataEl.textContent = preview.data;
+                        }
+                    } else {
+                        dataEl.textContent = '无';
+                    }
+
+                    // 显示模态框
+                    document.getElementById('requestPreviewModal').style.display = 'block';
+                    document.body.style.overflow = 'hidden';  // 禁止背景滚动
+                } else {
+                    alert('获取请求详情失败: ' + data.message);
+                }
+            } catch (error) {
+                alert('获取请求详情失败: ' + error.message);
+            }
+        }
+
+        // 关闭请求预览模态框
+        function closeRequestPreviewModal() {
+            document.getElementById('requestPreviewModal').style.display = 'none';
+            document.body.style.overflow = '';  // 恢复滚动
+        }
+
+        // 显示日志请求预览
+        async function showLogRequestPreview(logId) {
+            try {
+                const res = await fetch(`/api/logs/${logId}/preview`);
+                const data = await res.json();
+
+                if (data.success) {
+                    const preview = data.data;
+
+                    // 填充请求方式
+                    document.getElementById('previewMethod').textContent = preview.method || '未记录';
+
+                    // 填充请求地址
+                    document.getElementById('previewUrl').textContent = preview.url || '未记录';
+
+                    // 填充请求头
+                    const headersEl = document.getElementById('previewHeaders');
+                    if (preview.headers && Object.keys(preview.headers).length > 0) {
+                        let headersText = '';
+                        for (const [key, value] of Object.entries(preview.headers)) {
+                            headersText += `${key}: ${value}\n`;
+                        }
+                        headersEl.textContent = headersText.trim();
+                    } else {
+                        headersEl.textContent = '无';
+                    }
+
+                    // 填充 Cookies
+                    const cookiesEl = document.getElementById('previewCookies');
+                    if (preview.cookies && Object.keys(preview.cookies).length > 0) {
+                        let cookiesText = '';
+                        for (const [key, value] of Object.entries(preview.cookies)) {
+                            cookiesText += `${key} = ${value}\n`;
+                        }
+                        cookiesEl.textContent = cookiesText.trim();
+                    } else {
+                        cookiesEl.textContent = '无';
+                    }
+
+                    // 填充请求体
+                    const dataEl = document.getElementById('previewData');
+                    if (preview.data) {
+                        // 尝试格式化 JSON
+                        try {
+                            const jsonData = JSON.parse(preview.data);
+                            dataEl.textContent = JSON.stringify(jsonData, null, 2);
+                        } catch (e) {
+                            // 不是 JSON，直接显示
+                            dataEl.textContent = preview.data;
+                        }
+                    } else {
+                        dataEl.textContent = '无';
+                    }
+
+                    // 显示模态框
+                    document.getElementById('requestPreviewModal').style.display = 'block';
+                    document.body.style.overflow = 'hidden';  // 禁止背景滚动
+                } else {
+                    alert('获取请求详情失败: ' + data.message);
+                }
+            } catch (error) {
+                alert('获取请求详情失败: ' + error.message);
             }
         }
     </script>

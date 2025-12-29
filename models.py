@@ -51,6 +51,12 @@ class CheckinLog(BaseModel):
     response_body = TextField(null=True, verbose_name='响应内容')
     error_message = TextField(null=True, verbose_name='错误信息')
     executed_at = DateTimeField(default=datetime.now, verbose_name='执行时间')
+    # 请求参数字段（用于记录实际发送的请求）
+    request_method = CharField(max_length=10, null=True, verbose_name='请求方式')
+    request_url = TextField(null=True, verbose_name='请求地址')
+    request_headers = TextField(null=True, verbose_name='请求头')
+    request_cookies = TextField(null=True, verbose_name='请求Cookies')
+    request_data = TextField(null=True, verbose_name='请求体')
 
     class Meta:
         table_name = 'checkin_logs'
@@ -99,13 +105,49 @@ def init_config():
         db.close()
 
 
+def migrate_database():
+    """数据库迁移：添加缺失的字段"""
+    db.connect(reuse_if_open=True)
+
+    try:
+        # 检查 checkin_logs 表是否存在新字段
+        cursor = db.execute_sql("PRAGMA table_info(checkin_logs)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        # 需要添加的新字段
+        new_fields = {
+            'request_method': 'VARCHAR(10)',
+            'request_url': 'TEXT',
+            'request_headers': 'TEXT',
+            'request_cookies': 'TEXT',
+            'request_data': 'TEXT'
+        }
+
+        # 检查并添加缺失的字段
+        for field_name, field_type in new_fields.items():
+            if field_name not in columns:
+                print(f'添加字段: {field_name}')
+                db.execute_sql(f'ALTER TABLE checkin_logs ADD COLUMN {field_name} {field_type}')
+
+        print('数据库迁移完成')
+
+    except Exception as e:
+        print(f'数据库迁移失败: {e}')
+
+    finally:
+        db.close()
+
+
 def init_db():
     """初始化数据库"""
     db.connect(reuse_if_open=True)
     db.create_tables([Account, CheckinLog, Config], safe=True)  # safe=True 表示表已存在时不报错
     db.close()
     print('数据库检查完成')
-    
+
+    # 执行数据库迁移
+    migrate_database()
+
     # 初始化配置
     init_config()
 
