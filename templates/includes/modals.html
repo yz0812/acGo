@@ -1,0 +1,309 @@
+<!-- 添加/编辑账号模态框 -->
+<div id="accountModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 id="modalTitle">添加账号</h3>
+            <span class="close" onclick="closeModal()">&times;</span>
+        </div>
+        <div class="modal-body">
+            <form id="accountForm">
+                <input type="hidden" id="accountId">
+
+                <div class="form-group">
+                    <label for="accountName">账号名称 *</label>
+                    <input type="text" id="accountName" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="curlCommand">Curl 命令 *</label>
+                    <textarea id="curlCommand" rows="6" required placeholder="粘贴完整的 curl 命令，例如：&#10;curl 'https://api.example.com/checkin' \&#10;  -H 'Authorization: Bearer token123' \&#10;  -H 'Content-Type: application/json' \&#10;  --data-raw '{&quot;user_id&quot;: 123}'"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="cronExpr">Cron 表达式 *</label>
+                    <input type="text" id="cronExpr" value="0 8 * * *" required>
+                    <small style="display: block; margin-top: 5px;">
+                        <strong>支持两种格式：</strong><br>
+                        <strong>1. 标准 Cron：</strong>分 时 日 月 周<br>
+                        &nbsp;&nbsp;&nbsp;• <code>0 8 * * *</code> → 每天 8:00 执行<br>
+                        &nbsp;&nbsp;&nbsp;• <code>30 14 * * 1-5</code> → 每周一到周五 14:30 执行<br>
+                        <strong>2. 随机时间窗口：</strong>R(开始时间-结束时间) 日 月 周<br>
+                        &nbsp;&nbsp;&nbsp;• <code>R(09:00-09:30) * * *</code> → 每天 9:00-9:30 之间随机执行<br>
+                        &nbsp;&nbsp;&nbsp;• <code>R(08:00-08:15) * * 1-5</code> → 每周一到周五 8:00-8:15 随机执行<br>
+                        &nbsp;&nbsp;&nbsp;• <code>R(20:00-22:00) 1 * *</code> → 每月1号 20:00-22:00 随机执行
+                    </small>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="retryCount">重试次数</label>
+                        <input type="number" id="retryCount" value="3" min="0" max="10">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="retryInterval">重试间隔(秒)</label>
+                        <input type="number" id="retryInterval" value="60" min="1">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="enabled" checked>
+                        启用定时任务
+                    </label>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" onclick="closeModal()" class="btn btn-secondary">取消</button>
+                    <button type="submit" class="btn btn-primary">保存</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- 响应详情模态框 -->
+<div id="responseModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>响应详情</h3>
+            <span class="close" onclick="closeResponseModal()">&times;</span>
+        </div>
+        <div class="modal-body">
+            <pre id="responseContent" style="white-space: pre-wrap; word-wrap: break-word; max-height: 500px; overflow-y: auto; background: #f5f5f5; padding: 15px; border-radius: 4px;"></pre>
+        </div>
+    </div>
+</div>
+
+<!-- 系统设置模态框 -->
+<div id="systemSettingsModal" class="modal">
+    <div class="modal-content" style="max-width: 600px;">
+        <div class="modal-header">
+            <h3>系统设置</h3>
+            <span class="close" onclick="closeSystemSettingsModal()">&times;</span>
+        </div>
+        <div class="modal-body">
+            <!-- 修改密码 -->
+            <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                <h4 style="margin-top: 0;">修改管理员密码</h4>
+
+                <div class="form-group">
+                    <label for="oldPassword">旧密码 *</label>
+                    <input type="password" id="oldPassword" placeholder="请输入旧密码">
+                </div>
+
+                <div class="form-group">
+                    <label for="newPassword">新密码 *</label>
+                    <input type="password" id="newPassword" placeholder="请输入新密码（至少6位）">
+                </div>
+
+                <div class="form-group">
+                    <label for="confirmPassword">确认新密码 *</label>
+                    <input type="password" id="confirmPassword" placeholder="请再次输入新密码">
+                </div>
+
+                <button onclick="changePassword()" class="btn btn-primary">修改密码</button>
+            </div>
+
+            <!-- 自动清理配置 -->
+            <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                <h4 style="margin-top: 0;">签到记录自动清理</h4>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="autoCleanLogs">
+                        启用自动清理
+                    </label>
+                    <small>启用后，每天凌晨 3:00 自动清理超出限制的旧记录</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="maxLogsCount">最大记录数</label>
+                    <input type="number" id="maxLogsCount" value="500" min="100" max="10000">
+                    <small>保留最新的 N 条签到记录，超出部分将被自动清理（最小 100 条）</small>
+                </div>
+            </div>
+
+            <div class="form-actions">
+                <button onclick="closeSystemSettingsModal()" class="btn btn-secondary">取消</button>
+                <button onclick="saveSystemConfig()" class="btn btn-primary">保存配置</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 应用选择模态框 -->
+<div id="appSelectionModal" class="modal">
+    <div class="modal-content" style="max-width: 600px;">
+        <div class="modal-header">
+            <h3>选择应用</h3>
+            <span class="close" onclick="closeAppSelectionModal()">&times;</span>
+        </div>
+        <div class="modal-body" style="padding: 30px;">
+            <style>
+                .app-card {
+                    position: relative;
+                    padding: 8px 6px;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                    overflow: hidden;
+                    border: 1px solid transparent;
+                    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+                }
+
+                .app-card::before {
+                    content: '';
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    bottom: 0;
+                    background: inherit;
+                    opacity: 1;
+                    transition: opacity 0.3s ease;
+                    z-index: 0;
+                }
+
+                .app-card:hover {
+                    transform: translateY(-4px) scale(1.02);
+                    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+                    border-color: rgba(255, 255, 255, 0.3);
+                }
+
+                .app-card:hover::before {
+                    opacity: 0.9;
+                }
+
+                .app-card-content {
+                    position: relative;
+                    z-index: 1;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    gap: 4px;
+                }
+
+                .app-icon {
+                    font-size: 18px;
+                    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
+                    transition: transform 0.3s ease;
+                }
+
+                .app-card:hover .app-icon {
+                    transform: scale(1.1) rotate(5deg);
+                }
+
+                .app-name {
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: white;
+                    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+                    letter-spacing: 0.2px;
+                }
+
+                .app-desc {
+                    font-size: 9px;
+                    color: rgba(255, 255, 255, 0.85);
+                    text-align: center;
+                    line-height: 1.2;
+                }
+
+                .app-card-leaflow {
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                }
+
+                .app-card-anyrouter {
+                    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+                }
+            </style>
+
+            <div style="display: grid; grid-template-columns: repeat(5, 90px); gap: 15px; justify-content: start;">
+                <div class="app-card app-card-leaflow" onclick="showCustomAccountModal('Leaflow')">
+                    <div class="app-card-content">
+                        <div class="app-icon">🍃</div>
+                        <div class="app-name">Leaflow</div>
+                        <div class="app-desc">流量管理</div>
+                    </div>
+                </div>
+
+                <div class="app-card app-card-anyrouter" onclick="showCustomAccountModal('AnyRouter')">
+                    <div class="app-card-content">
+                        <div class="app-icon">🌐</div>
+                        <div class="app-name">AnyRouter</div>
+                        <div class="app-desc">路由服务</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 自定义账号模态框（占位符，等会实现） -->
+<div id="customAccountModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 id="customModalTitle">添加自定义账号</h3>
+            <span class="close" onclick="closeCustomAccountModal()">&times;</span>
+        </div>
+        <div class="modal-body">
+            <p>自定义账号表单内容（待实现）</p>
+            <p>当前选择的应用：<span id="selectedAppType"></span></p>
+        </div>
+    </div>
+</div>
+
+<!-- 请求详情模态框 -->
+<div id="requestPreviewModal" class="modal">
+    <div class="modal-content" style="max-width: 800px; max-height: 90vh; display: flex; flex-direction: column;">
+        <div class="modal-header">
+            <h3>请求详情监视器</h3>
+            <span class="close" onclick="closeRequestPreviewModal()">&times;</span>
+        </div>
+        <div class="modal-body" style="overflow-y: auto; flex: 1; padding: 20px;">
+            <!-- 请求方式 -->
+            <div style="margin-bottom: 20px;">
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                    <span style="font-weight: 600; color: #555; font-size: 13px; text-transform: uppercase;">Method</span>
+                </div>
+                <div style="background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace;">
+                    <code id="previewMethod" style="font-size: 14px; color: #0969da; font-weight: 600;">-</code>
+                </div>
+            </div>
+
+            <!-- 请求地址 -->
+            <div style="margin-bottom: 20px;">
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                    <span style="font-weight: 600; color: #555; font-size: 13px; text-transform: uppercase;">URL</span>
+                </div>
+                <div style="background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; word-break: break-all;">
+                    <code id="previewUrl" style="font-size: 13px; color: #1f883d;">-</code>
+                </div>
+            </div>
+
+            <!-- 请求头 -->
+            <div style="margin-bottom: 20px;">
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                    <span style="font-weight: 600; color: #555; font-size: 13px; text-transform: uppercase;">Headers</span>
+                </div>
+                <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 14px; max-height: 250px; overflow-y: auto;">
+                    <pre id="previewHeaders" style="margin: 0; font-size: 13px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; color: #c9d1d9; white-space: pre-wrap; word-wrap: break-word; line-height: 1.6;">-</pre>
+                </div>
+            </div>
+
+            <!-- 请求体 -->
+            <div style="margin-bottom: 20px;">
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                    <span style="font-weight: 600; color: #555; font-size: 13px; text-transform: uppercase;">Body</span>
+                </div>
+                <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 14px; max-height: 250px; overflow-y: auto;">
+                    <pre id="previewData" style="margin: 0; font-size: 13px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; color: #c9d1d9; white-space: pre-wrap; word-wrap: break-word; line-height: 1.6;">-</pre>
+                </div>
+            </div>
+
+            <div style="text-align: right; margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb;">
+                <button onclick="closeRequestPreviewModal()" class="btn btn-secondary">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>

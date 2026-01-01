@@ -1,0 +1,805 @@
+// 全局变量
+let currentPage = 1;
+let totalPages = 1;
+
+// HTML 转义函数（防止 XSS）
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+}
+
+// 显示响应详情
+function showResponseDetail(element) {
+    const content = element.getAttribute('data-content');
+    // 解码 HTML 实体
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = content;
+    const decoded = textarea.value;
+
+    document.getElementById('responseContent').textContent = decoded;
+    document.getElementById('responseModal').style.display = 'block';
+    document.body.style.overflow = 'hidden';  // 禁止背景滚动
+}
+
+// 关闭响应详情模态框
+function closeResponseModal() {
+    document.getElementById('responseModal').style.display = 'none';
+    document.body.style.overflow = '';  // 恢复滚动
+}
+
+// 显示系统设置模态框
+function showSystemSettingsModal() {
+    loadSystemConfig();
+    document.getElementById('systemSettingsModal').style.display = 'block';
+    document.body.style.overflow = 'hidden';  // 禁止背景滚动
+}
+
+// 关闭系统设置模态框
+function closeSystemSettingsModal() {
+    document.getElementById('systemSettingsModal').style.display = 'none';
+    document.body.style.overflow = '';  // 恢复滚动
+    // 清空密码字段
+    document.getElementById('oldPassword').value = '';
+    document.getElementById('newPassword').value = '';
+    document.getElementById('confirmPassword').value = '';
+}
+
+// 页面加载时初始化
+document.addEventListener('DOMContentLoaded', function() {
+    loadStats();
+    loadAccounts();
+    loadLogsPage(1);
+    loadWebhookConfig();
+});
+
+// 加载统计数据
+async function loadStats() {
+    try {
+        const res = await fetch('/api/stats');
+        const data = await res.json();
+
+        if (data.success) {
+            document.getElementById('totalAccounts').textContent = data.data.total_accounts;
+            document.getElementById('enabledAccounts').textContent = data.data.enabled_accounts;
+            document.getElementById('totalLogs').textContent = data.data.total_logs;
+            document.getElementById('successLogs').textContent = data.data.success_logs;
+        }
+    } catch (error) {
+        console.error('加载统计失败:', error);
+    }
+}
+
+// 加载账号列表
+async function loadAccounts() {
+    try {
+        const res = await fetch('/api/accounts');
+        const data = await res.json();
+
+        if (data.success) {
+            const tbody = document.getElementById('accountsBody');
+
+            if (data.data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;">暂无账号</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = data.data.map(acc => `
+                <tr>
+                    <td>${acc.id}</td>
+                    <td>${acc.name}</td>
+                    <td>${acc.cron_expr}</td>
+                    <td>${acc.retry_count}</td>
+                    <td>${acc.retry_interval}</td>
+                    <td>
+                        <span class="badge ${acc.enabled ? 'badge-success' : 'badge-danger'}">
+                            ${acc.enabled ? '启用' : '禁用'}
+                        </span>
+                    </td>
+                    <td>${acc.created_at}</td>
+                    <td>
+                        <button onclick="showRequestPreview(${acc.id})" class="btn btn-sm btn-secondary">查看详情</button>
+                        <button onclick="manualCheckin(${acc.id})" class="btn btn-sm btn-success">立即签到</button>
+                        <button onclick="editAccount(${acc.id})" class="btn btn-sm btn-primary">编辑</button>
+                        <button onclick="deleteAccount(${acc.id})" class="btn btn-sm btn-danger">删除</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+    } catch (error) {
+        console.error('加载账号失败:', error);
+    }
+}
+
+// 加载签到记录（分页）
+async function loadLogsPage(page) {
+    if (page < 1) return;
+
+    try {
+        const statusFilter = document.getElementById('statusFilter').value;
+        const url = `/api/logs?page=${page}&page_size=10${statusFilter ? '&status=' + statusFilter : ''}`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.success) {
+            const tbody = document.getElementById('logsBody');
+
+            if (data.data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;">暂无记录</td></tr>';
+                document.getElementById('logsPagination').style.display = 'none';
+                return;
+            }
+
+            tbody.innerHTML = data.data.map(log => `
+                <tr>
+                    <td>${log.id}</td>
+                    <td>${log.account_name}</td>
+                    <td>
+                        <span class="badge ${log.status === 'success' ? 'badge-success' : 'badge-danger'}">
+                            ${log.status === 'success' ? '成功' : '失败'}
+                        </span>
+                    </td>
+                    <td>${log.response_code || '-'}</td>
+                    <td>
+                        ${log.response_body ?
+                            `<span class="clickable" data-content="${escapeHtml(log.response_body)}" onclick="showResponseDetail(this)" title="点击查看完整内容">${escapeHtml(log.response_body.substring(0, 50))}...</span>`
+                            : '-'}
+                    </td>
+                    <td>
+                        ${log.error_message ?
+                            `<span class="clickable" data-content="${escapeHtml(log.error_message)}" onclick="showResponseDetail(this)" title="点击查看完整内容">${escapeHtml(log.error_message.substring(0, 30))}...</span>`
+                            : '-'}
+                    </td>
+                    <td>${log.executed_at}</td>
+                    <td>
+                        <button onclick="showLogRequestPreview(${log.id})" class="btn btn-sm btn-secondary">查看详情</button>
+                    </td>
+                </tr>
+            `).join('');
+
+            // 更新分页信息
+            currentPage = page;
+            totalPages = Math.ceil(data.total / data.page_size);
+
+            document.getElementById('pageInfo').textContent = `第 ${currentPage} 页 / 共 ${totalPages} 页 (总计 ${data.total} 条)`;
+            document.getElementById('prevBtn').disabled = currentPage <= 1;
+            document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+            document.getElementById('logsPagination').style.display = 'flex';
+        }
+    } catch (error) {
+        console.error('加载日志失败:', error);
+    }
+}
+
+// 状态筛选
+function filterLogsByStatus() {
+    loadLogsPage(1);  // 筛选后重置到第一页
+}
+
+// 兼容旧的 loadLogs 函数
+function loadLogs() {
+    loadLogsPage(1);
+}
+
+// 显示添加模态框
+function showAddModal() {
+    document.getElementById('modalTitle').textContent = '添加账号';
+    document.getElementById('accountForm').reset();
+    document.getElementById('accountId').value = '';
+    document.getElementById('accountModal').style.display = 'block';
+    document.body.style.overflow = 'hidden';  // 禁止背景滚动
+}
+
+// 编辑账号
+async function editAccount(id) {
+    try {
+        const res = await fetch('/api/accounts');
+        const data = await res.json();
+
+        if (data.success) {
+            const account = data.data.find(acc => acc.id === id);
+
+            if (account) {
+                document.getElementById('modalTitle').textContent = '编辑账号';
+                document.getElementById('accountId').value = account.id;
+                document.getElementById('accountName').value = account.name;
+                document.getElementById('curlCommand').value = account.curl_command;
+                document.getElementById('cronExpr').value = account.cron_expr;
+                document.getElementById('retryCount').value = account.retry_count;
+                document.getElementById('retryInterval').value = account.retry_interval;
+                document.getElementById('enabled').checked = account.enabled;
+                document.getElementById('accountModal').style.display = 'block';
+                document.body.style.overflow = 'hidden';  // 禁止背景滚动
+            }
+        }
+    } catch (error) {
+        console.error('加载账号失败:', error);
+    }
+}
+
+// 关闭模态框
+function closeModal() {
+    document.getElementById('accountModal').style.display = 'none';
+    document.body.style.overflow = '';  // 恢复滚动
+}
+
+// 提交表单
+document.getElementById('accountForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+
+    const id = document.getElementById('accountId').value;
+    const formData = {
+        name: document.getElementById('accountName').value,
+        curl_command: document.getElementById('curlCommand').value,
+        cron_expr: document.getElementById('cronExpr').value,
+        retry_count: parseInt(document.getElementById('retryCount').value),
+        retry_interval: parseInt(document.getElementById('retryInterval').value),
+        enabled: document.getElementById('enabled').checked
+    };
+
+    try {
+        const url = id ? `/api/accounts/${id}` : '/api/accounts';
+        const method = id ? 'PUT' : 'POST';
+
+        const res = await fetch(url, {
+            method: method,
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(formData)
+        });
+
+        const data = await res.json();
+
+        if (data.success) {
+            alert(data.message);
+            closeModal();
+            loadAccounts();
+            loadStats();
+        } else {
+            alert('操作失败: ' + data.message);
+        }
+    } catch (error) {
+        alert('操作失败: ' + error.message);
+    }
+});
+
+// 删除账号
+async function deleteAccount(id) {
+    if (!confirm('确定要删除这个账号吗？')) return;
+
+    try {
+        const res = await fetch(`/api/accounts/${id}`, {method: 'DELETE'});
+        const data = await res.json();
+
+        if (data.success) {
+            alert(data.message);
+            loadAccounts();
+            loadStats();
+        } else {
+            alert('删除失败: ' + data.message);
+        }
+    } catch (error) {
+        alert('删除失败: ' + error.message);
+    }
+}
+
+// 手动签到
+async function manualCheckin(id) {
+    if (!confirm('确定要立即执行签到吗？')) return;
+
+    try {
+        const res = await fetch(`/api/checkin/${id}`, {method: 'POST'});
+        const data = await res.json();
+
+        alert(data.message);
+
+        if (data.success) {
+            loadLogs();
+            loadStats();
+        }
+    } catch (error) {
+        alert('签到失败: ' + error.message);
+    }
+}
+
+// 清除7天前的日志
+async function clearOldLogs() {
+    if (!confirm('确定要清除7天前的签到记录吗？\n\n此操作不可恢复！')) return;
+
+    try {
+        const res = await fetch('/api/logs/clear?days=7', {method: 'DELETE'});
+        const data = await res.json();
+
+        alert(data.message);
+
+        if (data.success) {
+            loadLogs();
+            loadStats();
+        }
+    } catch (error) {
+        alert('清除失败: ' + error.message);
+    }
+}
+
+// 清除全部日志
+async function clearAllLogs() {
+    if (!confirm('⚠️ 警告：确定要清除全部签到记录吗？\n\n此操作不可恢复！')) return;
+
+    try {
+        const res = await fetch('/api/logs/clear', {method: 'DELETE'});
+        const data = await res.json();
+
+        alert(data.message);
+
+        if (data.success) {
+            loadLogs();
+            loadStats();
+        }
+    } catch (error) {
+        alert('清除失败: ' + error.message);
+    }
+}
+
+// 点击模态框外部关闭
+window.onclick = function(event) {
+    const accountModal = document.getElementById('accountModal');
+    const responseModal = document.getElementById('responseModal');
+    const systemSettingsModal = document.getElementById('systemSettingsModal');
+    const requestPreviewModal = document.getElementById('requestPreviewModal');
+    const appSelectionModal = document.getElementById('appSelectionModal');
+    const customAccountModal = document.getElementById('customAccountModal');
+
+    if (event.target === accountModal) {
+        closeModal();
+    }
+    if (event.target === responseModal) {
+        closeResponseModal();
+    }
+    if (event.target === systemSettingsModal) {
+        closeSystemSettingsModal();
+    }
+    if (event.target === requestPreviewModal) {
+        closeRequestPreviewModal();
+    }
+    if (event.target === appSelectionModal) {
+        closeAppSelectionModal();
+    }
+    if (event.target === customAccountModal) {
+        closeCustomAccountModal();
+    }
+}
+
+// 加载 Webhook 配置
+async function loadWebhookConfig() {
+    try {
+        const res = await fetch('/api/webhook/config');
+        const data = await res.json();
+
+        if (data.success) {
+            document.getElementById('webhookEnabled').checked = data.data.enabled || false;
+            document.getElementById('webhookIncludeResponse').checked = data.data.include_response || false;
+            document.getElementById('webhookUrl').value = data.data.url || '';
+            document.getElementById('webhookMethod').value = data.data.method || 'POST';
+            document.getElementById('webhookHeaders').value = data.data.headers || '';
+        }
+    } catch (error) {
+        console.error('加载 Webhook 配置失败:', error);
+    }
+}
+
+// 保存 Webhook 配置
+async function saveWebhook() {
+    const config = {
+        enabled: document.getElementById('webhookEnabled').checked,
+        include_response: document.getElementById('webhookIncludeResponse').checked,
+        url: document.getElementById('webhookUrl').value,
+        method: document.getElementById('webhookMethod').value,
+        headers: document.getElementById('webhookHeaders').value
+    };
+
+    // 验证 URL
+    if (config.enabled && !config.url) {
+        alert('请输入 Webhook URL');
+        return;
+    }
+
+    // 验证 Headers JSON 格式
+    if (config.headers) {
+        try {
+            JSON.parse(config.headers);
+        } catch (e) {
+            alert('自定义请求头格式错误，请输入有效的 JSON');
+            return;
+        }
+    }
+
+    try {
+        const res = await fetch('/api/webhook/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(config)
+        });
+
+        const data = await res.json();
+
+        if (data.success) {
+            alert('Webhook 配置保存成功');
+        } else {
+            alert('保存失败: ' + data.message);
+        }
+    } catch (error) {
+        alert('保存失败: ' + error.message);
+    }
+}
+
+// 测试 Webhook
+async function testWebhook() {
+    const url = document.getElementById('webhookUrl').value;
+
+    if (!url) {
+        alert('请先输入 Webhook URL');
+        return;
+    }
+
+    if (!confirm('确定要发送测试通知到 Webhook 吗？')) return;
+
+    try {
+        const res = await fetch('/api/webhook/test', {method: 'POST'});
+        const data = await res.json();
+
+        if (data.success) {
+            alert('测试通知发送成功！\n\n请检查 Webhook 接收端是否收到测试数据。');
+        } else {
+            alert('测试失败: ' + data.message);
+        }
+    } catch (error) {
+        alert('测试失败: ' + error.message);
+    }
+}
+
+// 导出账号
+async function exportAccounts() {
+    try {
+        const res = await fetch('/api/accounts/export');
+        const data = await res.json();
+
+        if (data.success) {
+            // 创建 Blob 并下载
+            const blob = new Blob([JSON.stringify(data.data, null, 2)], {type: 'application/json'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `acgo_accounts_${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            alert(`成功导出 ${data.data.length} 个账号`);
+        } else {
+            alert('导出失败: ' + data.message);
+        }
+    } catch (error) {
+        alert('导出失败: ' + error.message);
+    }
+}
+
+// 导入账号
+async function importAccounts(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    // 验证文件类型
+    if (!file.name.endsWith('.json')) {
+        alert('请选择 JSON 文件');
+        event.target.value = '';
+        return;
+    }
+
+    try {
+        const text = await file.text();
+        const accounts = JSON.parse(text);
+
+        // 验证数据格式
+        if (!Array.isArray(accounts)) {
+            alert('JSON 格式错误：根元素必须是数组');
+            event.target.value = '';
+            return;
+        }
+
+        if (accounts.length === 0) {
+            alert('文件中没有账号数据');
+            event.target.value = '';
+            return;
+        }
+
+        // 确认导入
+        if (!confirm(`确定要导入 ${accounts.length} 个账号吗？\n\n重名账号将自动重命名。`)) {
+            event.target.value = '';
+            return;
+        }
+
+        // 发送导入请求
+        const res = await fetch('/api/accounts/import', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({accounts: accounts})
+        });
+
+        const data = await res.json();
+
+        if (data.success) {
+            alert(`导入完成！\n\n成功: ${data.imported} 个\n失败: ${data.failed} 个\n重命名: ${data.renamed} 个`);
+            loadAccounts();
+            loadStats();
+        } else {
+            alert('导入失败: ' + data.message);
+        }
+    } catch (error) {
+        if (error instanceof SyntaxError) {
+            alert('JSON 格式错误: ' + error.message);
+        } else {
+            alert('导入失败: ' + error.message);
+        }
+    } finally {
+        // 清空文件选择，允许重复导入同一文件
+        event.target.value = '';
+    }
+}
+// 加载系统配置
+async function loadSystemConfig() {
+    try {
+        const res = await fetch('/api/system/config');
+        const data = await res.json();
+
+        if (data.success) {
+            document.getElementById('autoCleanLogs').checked = data.data.auto_clean_logs || false;
+            document.getElementById('maxLogsCount').value = data.data.max_logs_count || 500;
+        }
+    } catch (error) {
+        console.error('加载系统配置失败:', error);
+    }
+}
+
+// 保存系统配置
+async function saveSystemConfig() {
+    const config = {
+        auto_clean_logs: document.getElementById('autoCleanLogs').checked,
+        max_logs_count: parseInt(document.getElementById('maxLogsCount').value)
+    };
+
+    // 验证最大记录数
+    if (config.max_logs_count < 100) {
+        alert('最大记录数不能小于 100');
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/system/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(config)
+        });
+
+        const data = await res.json();
+
+        if (data.success) {
+            alert('系统配置保存成功');
+            closeSystemSettingsModal();
+        } else {
+            alert('保存失败: ' + data.message);
+        }
+    } catch (error) {
+        alert('保存失败: ' + error.message);
+    }
+}
+
+// 修改密码
+async function changePassword() {
+    const oldPassword = document.getElementById('oldPassword').value;
+    const newPassword = document.getElementById('newPassword').value;
+    const confirmPassword = document.getElementById('confirmPassword').value;
+
+    // 验证输入
+    if (!oldPassword || !newPassword || !confirmPassword) {
+        alert('请填写所有密码字段');
+        return;
+    }
+
+    if (newPassword.length < 6) {
+        alert('新密码长度不能少于 6 位');
+        return;
+    }
+
+    if (newPassword !== confirmPassword) {
+        alert('两次输入的新密码不一致');
+        return;
+    }
+
+    if (!confirm('确定要修改管理员密码吗？修改后需要重新登录。')) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/system/password', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                old_password: oldPassword,
+                new_password: newPassword
+            })
+        });
+
+        const data = await res.json();
+
+        if (data.success) {
+            alert(data.message);
+            // 清空密码字段
+            document.getElementById('oldPassword').value = '';
+            document.getElementById('newPassword').value = '';
+            document.getElementById('confirmPassword').value = '';
+            // 跳转到登录页
+            window.location.href = '/logout';
+        } else {
+            alert('修改失败: ' + data.message);
+        }
+    } catch (error) {
+        alert('修改失败: ' + error.message);
+    }
+}
+
+// 显示请求预览
+async function showRequestPreview(accountId) {
+    try {
+        const res = await fetch(`/api/accounts/${accountId}/preview`);
+        const data = await res.json();
+
+        if (data.success) {
+            const preview = data.data;
+
+            // 填充请求方式
+            document.getElementById('previewMethod').textContent = preview.method;
+
+            // 填充请求地址
+            document.getElementById('previewUrl').textContent = preview.url;
+
+            // 填充请求头（包含 Cookies）
+            const headersEl = document.getElementById('previewHeaders');
+            let headersText = '';
+
+            // 先添加普通请求头
+            if (preview.headers && Object.keys(preview.headers).length > 0) {
+                for (const [key, value] of Object.entries(preview.headers)) {
+                    headersText += `${key}: ${value}\n`;
+                }
+            }
+
+            // 将 Cookies 转换为 Cookie 请求头并添加
+            if (preview.cookies && Object.keys(preview.cookies).length > 0) {
+                const cookieHeader = Object.entries(preview.cookies)
+                    .map(([k, v]) => `${k}=${v}`)
+                    .join('; ');
+                headersText += `Cookie: ${cookieHeader}\n`;
+            }
+
+            headersEl.textContent = headersText.trim() || '无';
+
+            // 填充请求体
+            const dataEl = document.getElementById('previewData');
+            if (preview.data) {
+                // 尝试格式化 JSON
+                try {
+                    const jsonData = JSON.parse(preview.data);
+                    dataEl.textContent = JSON.stringify(jsonData, null, 2);
+                } catch (e) {
+                    // 不是 JSON，直接显示
+                    dataEl.textContent = preview.data;
+                }
+            } else {
+                dataEl.textContent = '无';
+            }
+
+            // 显示模态框
+            document.getElementById('requestPreviewModal').style.display = 'block';
+            document.body.style.overflow = 'hidden';  // 禁止背景滚动
+        } else {
+            alert('获取请求详情失败: ' + data.message);
+        }
+    } catch (error) {
+        alert('获取请求详情失败: ' + error.message);
+    }
+}
+
+// 关闭请求预览模态框
+function closeRequestPreviewModal() {
+    document.getElementById('requestPreviewModal').style.display = 'none';
+    document.body.style.overflow = '';  // 恢复滚动
+}
+
+// 显示日志请求预览
+async function showLogRequestPreview(logId) {
+    try {
+        const res = await fetch(`/api/logs/${logId}/preview`);
+        const data = await res.json();
+
+        if (data.success) {
+            const preview = data.data;
+
+            // 填充请求方式
+            document.getElementById('previewMethod').textContent = preview.method || '未记录';
+
+            // 填充请求地址
+            document.getElementById('previewUrl').textContent = preview.url || '未记录';
+
+            // 填充请求头（包含 Cookies）
+            const headersEl = document.getElementById('previewHeaders');
+            let headersText = '';
+
+            // 先添加普通请求头
+            if (preview.headers && Object.keys(preview.headers).length > 0) {
+                for (const [key, value] of Object.entries(preview.headers)) {
+                    headersText += `${key}: ${value}\n`;
+                }
+            }
+
+            // 将 Cookies 转换为 Cookie 请求头并添加
+            if (preview.cookies && Object.keys(preview.cookies).length > 0) {
+                const cookieHeader = Object.entries(preview.cookies)
+                    .map(([k, v]) => `${k}=${v}`)
+                    .join('; ');
+                headersText += `Cookie: ${cookieHeader}\n`;
+            }
+
+            headersEl.textContent = headersText.trim() || '无';
+
+            // 填充请求体
+            const dataEl = document.getElementById('previewData');
+            if (preview.data) {
+                // 尝试格式化 JSON
+                try {
+                    const jsonData = JSON.parse(preview.data);
+                    dataEl.textContent = JSON.stringify(jsonData, null, 2);
+                } catch (e) {
+                    // 不是 JSON，直接显示
+                    dataEl.textContent = preview.data;
+                }
+            } else {
+                dataEl.textContent = '无';
+            }
+
+            // 显示模态框
+            document.getElementById('requestPreviewModal').style.display = 'block';
+            document.body.style.overflow = 'hidden';  // 禁止背景滚动
+        } else {
+            alert('获取请求详情失败: ' + data.message);
+        }
+    } catch (error) {
+        alert('获取请求详情失败: ' + error.message);
+    }
+}
+
+// 显示应用选择模态框
+function showAppSelectionModal() {
+    document.getElementById('appSelectionModal').style.display = 'block';
+    document.body.style.overflow = 'hidden';  // 禁止背景滚动
+}
+
+// 关闭应用选择模态框
+function closeAppSelectionModal() {
+    document.getElementById('appSelectionModal').style.display = 'none';
+    document.body.style.overflow = '';  // 恢复滚动
+}
+
+// 显示自定义账号模态框
+function showCustomAccountModal(appType) {
+    // 关闭应用选择模态框
+    closeAppSelectionModal();
+
+    // 直接打开通用的账号添加框
+    showAddModal();
+}
+
+// 关闭自定义账号模态框
+function closeCustomAccountModal() {
+    document.getElementById('customAccountModal').style.display = 'none';
+    document.body.style.overflow = '';  // 恢复滚动
+}
