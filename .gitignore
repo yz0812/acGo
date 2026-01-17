@@ -64,3 +64,4 @@ myvenv
 .github
 .serena/*
 .serena
+.ace-tool/
