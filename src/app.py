@@ -1,7 +1,13 @@
 """Flask 主程序"""
 import os
 import json
+import time
+import hmac
+import hashlib
+import base64
+import urllib.parse
 from datetime import datetime
+import requests
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from .models import Account, CheckinLog, Config, db, init_db
 from .auth import login_required, check_password
@@ -61,6 +67,13 @@ def logout():
 def index():
     """主页面"""
     return render_template('index.html')
+
+
+@app.route('/notify')
+@login_required
+def notify():
+    """推送通知渠道页面"""
+    return render_template('notify.html')
 
 
 @app.route('/api/accounts', methods=['GET'])
@@ -589,38 +602,37 @@ def save_webhook_config():
     db.connect(reuse_if_open=True)
 
     try:
-        from datetime import datetime
+        # Webhook 配置项
+        webhook_configs = {
+            'webhook_enabled': 'true' if data.get('enabled') else 'false',
+            'webhook_include_response': 'true' if data.get('include_response') else 'false',
+            'webhook_url': data.get('url', ''),
+            'webhook_method': data.get('method', 'POST'),
+            'webhook_headers': data.get('headers', '')
+        }
 
-        # 保存或更新配置
-        Config.update(
-            value='true' if data.get('enabled') else 'false',
-            updated_at=datetime.now()
-        ).where(Config.key == 'webhook_enabled').execute()
-
-        Config.update(
-            value='true' if data.get('include_response') else 'false',
-            updated_at=datetime.now()
-        ).where(Config.key == 'webhook_include_response').execute()
-
-        Config.update(
-            value=data.get('url', ''),
-            updated_at=datetime.now()
-        ).where(Config.key == 'webhook_url').execute()
-
-        Config.update(
-            value=data.get('method', 'POST'),
-            updated_at=datetime.now()
-        ).where(Config.key == 'webhook_method').execute()
-
-        Config.update(
-            value=data.get('headers', ''),
-            updated_at=datetime.now()
-        ).where(Config.key == 'webhook_headers').execute()
+        # 保存或创建配置
+        for key, value in webhook_configs.items():
+            config = Config.get_or_none(Config.key == key)
+            if config:
+                Config.update(
+                    value=value,
+                    updated_at=datetime.now()
+                ).where(Config.key == key).execute()
+            else:
+                Config.create(
+                    key=key,
+                    value=value,
+                    updated_at=datetime.now()
+                )
 
         return jsonify({
             'success': True,
             'message': 'Webhook 配置保存成功'
         })
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'保存失败: {str(e)}'}), 500
 
     finally:
         db.close()
@@ -667,7 +679,7 @@ def test_webhook():
             'account_name': '测试账号',
             'status': 'success',
             'response_code': 200,
-            'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'date': datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ'),
             'message': '这是一条测试通知'
         }
 
@@ -868,6 +880,307 @@ def change_password():
             'success': True,
             'message': '密码修改成功，请重新登录'
         })
+
+    finally:
+        db.close()
+
+
+# ==================== 推送通知渠道 API ====================
+
+# 通知渠道配置键名列表
+NOTIFY_CONFIG_KEYS = [
+    'telegram_enabled', 'telegram_bot_token', 'telegram_user_id', 'telegram_api_url',
+    'wecom_enabled', 'wecom_webhook_key', 'wecom_api_url',
+    'dingtalk_enabled', 'dingtalk_access_token', 'dingtalk_secret', 'dingtalk_api_url',
+    'feishu_enabled', 'feishu_webhook_url', 'feishu_secret'
+]
+
+
+@app.route('/api/notify/config', methods=['GET'])
+@login_required
+def get_notify_config():
+    """获取通知渠道配置"""
+    db.connect(reuse_if_open=True)
+
+    try:
+        result = {}
+        for key in NOTIFY_CONFIG_KEYS:
+            config = Config.get_or_none(Config.key == key)
+            if config:
+                # 布尔值转换
+                if key.endswith('_enabled'):
+                    result[key] = config.value == 'true'
+                else:
+                    result[key] = config.value
+            else:
+                result[key] = False if key.endswith('_enabled') else ''
+
+        return jsonify({'success': True, 'data': result})
+
+    finally:
+        db.close()
+
+
+@app.route('/api/notify/config', methods=['POST'])
+@login_required
+def save_notify_config():
+    """保存通知渠道配置"""
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'success': False, 'message': '未收到数据'}), 400
+
+    db.connect(reuse_if_open=True)
+
+    try:
+        saved_count = 0
+        for key in NOTIFY_CONFIG_KEYS:
+            if key in data:
+                value = data[key]
+                # 布尔值转字符串
+                if isinstance(value, bool):
+                    value = 'true' if value else 'false'
+                else:
+                    value = str(value) if value is not None else ''
+
+                # 检查配置是否存在
+                config = Config.get_or_none(Config.key == key)
+                if config:
+                    # 更新现有配置
+                    Config.update(
+                        value=value,
+                        updated_at=datetime.now()
+                    ).where(Config.key == key).execute()
+                else:
+                    # 创建新配置
+                    Config.create(
+                        key=key,
+                        value=value,
+                        updated_at=datetime.now()
+                    )
+                saved_count += 1
+
+        return jsonify({'success': True, 'message': f'通知渠道配置保存成功，共 {saved_count} 项'})
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'保存失败: {str(e)}'}), 500
+
+    finally:
+        db.close()
+
+
+def _get_notify_config(prefix: str) -> dict:
+    """获取指定前缀的通知配置（内部函数）"""
+    result = {}
+    for key in NOTIFY_CONFIG_KEYS:
+        if key.startswith(prefix):
+            config = Config.get_or_none(Config.key == key)
+            short_key = key[len(prefix) + 1:]  # 移除前缀和下划线
+            if config:
+                result[short_key] = config.value == 'true' if key.endswith('_enabled') else config.value
+            else:
+                result[short_key] = False if key.endswith('_enabled') else ''
+    return result
+
+
+def _send_telegram(bot_token: str, user_id: str, message: str, api_url: str = '') -> dict:
+    """发送 Telegram 消息"""
+    base_url = api_url.rstrip('/') if api_url else 'https://api.telegram.org'
+    url = f"{base_url}/bot{bot_token}/sendMessage"
+
+    payload = {
+        'chat_id': user_id,
+        'text': message,
+        'parse_mode': 'HTML'
+    }
+
+    response = requests.post(url, json=payload, timeout=10)
+    return {'status_code': response.status_code, 'text': response.text}
+
+
+def _send_wecom(webhook_key: str, message: str, api_url: str = '') -> dict:
+    """发送企业微信消息"""
+    base_url = api_url.rstrip('/') if api_url else 'https://qyapi.weixin.qq.com'
+    url = f"{base_url}/cgi-bin/webhook/send?key={webhook_key}"
+
+    payload = {
+        'msgtype': 'text',
+        'text': {'content': message}
+    }
+
+    response = requests.post(url, json=payload, timeout=10)
+    return {'status_code': response.status_code, 'text': response.text}
+
+
+def _send_dingtalk(access_token: str, message: str, secret: str = '', api_url: str = '') -> dict:
+    """发送钉钉消息"""
+    base_url = api_url.rstrip('/') if api_url else 'https://oapi.dingtalk.com'
+    url = f"{base_url}/robot/send?access_token={access_token}"
+
+    # 加签
+    if secret:
+        timestamp = str(round(time.time() * 1000))
+        secret_enc = secret.encode('utf-8')
+        string_to_sign = f'{timestamp}\n{secret}'
+        string_to_sign_enc = string_to_sign.encode('utf-8')
+        hmac_code = hmac.new(secret_enc, string_to_sign_enc, digestmod=hashlib.sha256).digest()
+        sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+        url += f"&timestamp={timestamp}&sign={sign}"
+
+    payload = {
+        'msgtype': 'text',
+        'text': {'content': message}
+    }
+
+    response = requests.post(url, json=payload, timeout=10)
+    return {'status_code': response.status_code, 'text': response.text}
+
+
+def _send_feishu(webhook_url: str, message: str, secret: str = '') -> dict:
+    """发送飞书消息"""
+    payload = {
+        'msg_type': 'text',
+        'content': {'text': message}
+    }
+
+    # 加签（飞书签名算法：base64(hmac_sha256(secret, timestamp + "\n" + secret))）
+    if secret:
+        timestamp = str(int(time.time()))
+        string_to_sign = f'{timestamp}\n{secret}'
+        hmac_code = hmac.new(secret.encode('utf-8'), string_to_sign.encode('utf-8'), digestmod=hashlib.sha256).digest()
+        sign = base64.b64encode(hmac_code).decode('utf-8')
+        payload['timestamp'] = timestamp
+        payload['sign'] = sign
+
+    response = requests.post(webhook_url, json=payload, timeout=10)
+    return {'status_code': response.status_code, 'text': response.text}
+
+
+@app.route('/api/notify/test/telegram', methods=['POST'])
+@login_required
+def test_telegram():
+    """测试 Telegram 通知"""
+    db.connect(reuse_if_open=True)
+
+    try:
+        cfg = _get_notify_config('telegram')
+
+        if not cfg.get('bot_token') or not cfg.get('user_id'):
+            return jsonify({'success': False, 'message': '请先配置 Bot Token 和 User ID'}), 400
+
+        message = f"🔔 ACGO 签到系统测试通知\n\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n状态: 测试成功"
+
+        result = _send_telegram(
+            cfg['bot_token'],
+            cfg['user_id'],
+            message,
+            cfg.get('api_url', '')
+        )
+
+        if 200 <= result['status_code'] < 300:
+            return jsonify({'success': True, 'message': 'Telegram 测试通知发送成功'})
+        else:
+            return jsonify({'success': False, 'message': f"发送失败: HTTP {result['status_code']}\n{result['text'][:200]}"}), 400
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'发送失败: {str(e)}'}), 500
+
+    finally:
+        db.close()
+
+
+@app.route('/api/notify/test/wecom', methods=['POST'])
+@login_required
+def test_wecom():
+    """测试企业微信通知"""
+    db.connect(reuse_if_open=True)
+
+    try:
+        cfg = _get_notify_config('wecom')
+
+        if not cfg.get('webhook_key'):
+            return jsonify({'success': False, 'message': '请先配置 Webhook Key'}), 400
+
+        message = f"🔔 ACGO 签到系统测试通知\n\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n状态: 测试成功"
+
+        result = _send_wecom(
+            cfg['webhook_key'],
+            message,
+            cfg.get('api_url', '')
+        )
+
+        if 200 <= result['status_code'] < 300:
+            return jsonify({'success': True, 'message': '企业微信测试通知发送成功'})
+        else:
+            return jsonify({'success': False, 'message': f"发送失败: HTTP {result['status_code']}\n{result['text'][:200]}"}), 400
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'发送失败: {str(e)}'}), 500
+
+    finally:
+        db.close()
+
+
+@app.route('/api/notify/test/dingtalk', methods=['POST'])
+@login_required
+def test_dingtalk():
+    """测试钉钉通知"""
+    db.connect(reuse_if_open=True)
+
+    try:
+        cfg = _get_notify_config('dingtalk')
+
+        if not cfg.get('access_token'):
+            return jsonify({'success': False, 'message': '请先配置 Access Token'}), 400
+
+        message = f"🔔 ACGO 签到系统测试通知\n\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n状态: 测试成功"
+
+        result = _send_dingtalk(
+            cfg['access_token'],
+            message,
+            cfg.get('secret', ''),
+            cfg.get('api_url', '')
+        )
+
+        if 200 <= result['status_code'] < 300:
+            return jsonify({'success': True, 'message': '钉钉测试通知发送成功'})
+        else:
+            return jsonify({'success': False, 'message': f"发送失败: HTTP {result['status_code']}\n{result['text'][:200]}"}), 400
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'发送失败: {str(e)}'}), 500
+
+    finally:
+        db.close()
+
+
+@app.route('/api/notify/test/feishu', methods=['POST'])
+@login_required
+def test_feishu():
+    """测试飞书通知"""
+    db.connect(reuse_if_open=True)
+
+    try:
+        cfg = _get_notify_config('feishu')
+
+        if not cfg.get('webhook_url'):
+            return jsonify({'success': False, 'message': '请先配置 Webhook 地址'}), 400
+
+        message = f"🔔 ACGO 签到系统测试通知\n\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n状态: 测试成功"
+
+        result = _send_feishu(
+            cfg['webhook_url'],
+            message,
+            cfg.get('secret', '')
+        )
+
+        if 200 <= result['status_code'] < 300:
+            return jsonify({'success': True, 'message': '飞书测试通知发送成功'})
+        else:
+            return jsonify({'success': False, 'message': f"发送失败: HTTP {result['status_code']}\n{result['text'][:200]}"}), 400
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'发送失败: {str(e)}'}), 500
 
     finally:
         db.close()

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>推送通知渠道 - 签到管理系统</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>推送通知渠道</h1>
+            <div class="header-actions">
+                <a href="{{ url_for('index') }}" class="btn btn-secondary">返回首页</a>
+                <a href="{{ url_for('logout') }}" class="btn btn-secondary">退出登录</a>
+            </div>
+        </header>
+
+        <!-- 推送通知渠道 -->
+        <section class="section">
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px;">
+                <!-- 自定义 Webhook 通知 -->
+                <fieldset style="border: 1px solid #ddd; border-radius: 8px; padding: 20px; display: flex; flex-direction: column;">
+                    <legend style="font-weight: bold; padding: 0 10px;">自定义 Webhook</legend>
+
+                    <div style="flex: 1;">
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="webhookEnabled">
+                                启用 Webhook 通知
+                            </label>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="webhookUrl">Webhook URL *</label>
+                            <input type="text" id="webhookUrl" placeholder="https://example.com/webhook">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="webhookMethod">请求方法</label>
+                            <select id="webhookMethod" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                                <option value="POST">POST</option>
+                                <option value="GET">GET</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="webhookIncludeResponse">
+                                包含签到响应内容
+                            </label>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="webhookHeaders">自定义请求头</label>
+                            <textarea id="webhookHeaders" rows="3" placeholder='{"Authorization": "Bearer token"}'></textarea>
+                            <small>JSON 格式，可设置 Content-Type、Authorization 等</small>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; margin-top: 15px;">
+                        <button onclick="saveWebhook()" class="btn btn-primary" style="flex: 1;">保存</button>
+                        <button onclick="testWebhook()" class="btn btn-secondary" style="flex: 1;">测试</button>
+                    </div>
+                </fieldset>
+
+                <!-- Telegram 通知 -->
+                <fieldset style="border: 1px solid #ddd; border-radius: 8px; padding: 20px; display: flex; flex-direction: column;">
+                    <legend style="font-weight: bold; padding: 0 10px;">Telegram 通知</legend>
+
+                    <div style="flex: 1;">
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="telegramEnabled">
+                                启用 Telegram 通知
+                            </label>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="telegramBotToken">Bot Token *</label>
+                            <input type="text" id="telegramBotToken" placeholder="123456:ABC-DEF...">
+                            <small>从 @BotFather 获取的 Bot Token</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="telegramUserId">User ID *</label>
+                            <input type="text" id="telegramUserId" placeholder="123456789">
+                            <small>接收通知的用户ID，可从 @userinfobot 获取</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="telegramApiUrl">API地址（可选）</label>
+                            <input type="text" id="telegramApiUrl" placeholder="https://api.telegram.org">
+                            <small>留空使用默认地址</small>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; margin-top: 15px;">
+                        <button onclick="saveTelegram()" class="btn btn-primary" style="flex: 1;">保存</button>
+                        <button onclick="testTelegram()" class="btn btn-secondary" style="flex: 1;">测试</button>
+                    </div>
+                </fieldset>
+
+                <!-- 企业微信通知 -->
+                <fieldset style="border: 1px solid #ddd; border-radius: 8px; padding: 20px; display: flex; flex-direction: column;">
+                    <legend style="font-weight: bold; padding: 0 10px;">企业微信通知</legend>
+
+                    <div style="flex: 1;">
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="wecomEnabled">
+                                启用企业微信通知
+                            </label>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="wecomWebhookKey">Webhook Key *</label>
+                            <input type="text" id="wecomWebhookKey" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                            <small>企业微信机器人的 Webhook Key</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="wecomApiUrl">API地址（可选）</label>
+                            <input type="text" id="wecomApiUrl" placeholder="https://qyapi.weixin.qq.com">
+                            <small>留空使用默认地址</small>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; margin-top: 15px;">
+                        <button onclick="saveWecom()" class="btn btn-primary" style="flex: 1;">保存</button>
+                        <button onclick="testWecom()" class="btn btn-secondary" style="flex: 1;">测试</button>
+                    </div>
+                </fieldset>
+
+                <!-- 钉钉机器人通知 -->
+                <fieldset style="border: 1px solid #ddd; border-radius: 8px; padding: 20px; display: flex; flex-direction: column;">
+                    <legend style="font-weight: bold; padding: 0 10px;">钉钉机器人通知</legend>
+
+                    <div style="flex: 1;">
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="dingtalkEnabled">
+                                启用钉钉机器人通知
+                            </label>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="dingtalkAccessToken">Access Token *</label>
+                            <input type="text" id="dingtalkAccessToken" placeholder="xxxxxxxx...">
+                            <small>机器人的 Access Token</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="dingtalkSecret">加签密钥（可选）</label>
+                            <input type="text" id="dingtalkSecret" placeholder="SECxxxxxxxx...">
+                            <small>安全设置中的加签密钥，不使用加签可留空</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="dingtalkApiUrl">API地址（可选）</label>
+                            <input type="text" id="dingtalkApiUrl" placeholder="https://oapi.dingtalk.com">
+                            <small>留空使用默认地址</small>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; margin-top: 15px;">
+                        <button onclick="saveDingtalk()" class="btn btn-primary" style="flex: 1;">保存</button>
+                        <button onclick="testDingtalk()" class="btn btn-secondary" style="flex: 1;">测试</button>
+                    </div>
+                </fieldset>
+
+                <!-- 飞书通知 -->
+                <fieldset style="border: 1px solid #ddd; border-radius: 8px; padding: 20px; display: flex; flex-direction: column;">
+                    <legend style="font-weight: bold; padding: 0 10px;">飞书通知</legend>
+
+                    <div style="flex: 1;">
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="feishuEnabled">
+                                启用飞书通知
+                            </label>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="feishuWebhookUrl">Webhook 地址 *</label>
+                            <input type="text" id="feishuWebhookUrl" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx">
+                            <small>飞书机器人的 Webhook 地址</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="feishuSecret">加签 Secret（可选）</label>
+                            <input type="text" id="feishuSecret" placeholder="SECxxxxxxxx...">
+                            <small>安全设置中的签名校验密钥，不使用可留空</small>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; margin-top: 15px;">
+                        <button onclick="saveFeishu()" class="btn btn-primary" style="flex: 1;">保存</button>
+                        <button onclick="testFeishu()" class="btn btn-secondary" style="flex: 1;">测试</button>
+                    </div>
+                </fieldset>
+            </div>
+        </section>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/notify.js') }}"></script>
+</body>
+</html>

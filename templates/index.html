@@ -11,6 +11,7 @@
         <header>
             <h1>签到管理系统</h1>
             <div class="header-actions">
+                <a href="{{ url_for('notify') }}" class="btn btn-primary">推送通知</a>
                 <button onclick="loadStats()" class="btn btn-secondary">刷新统计</button>
                 <button onclick="showSystemSettingsModal()" class="btn btn-secondary">系统设置</button>
                 <a href="{{ url_for('logout') }}" class="btn btn-secondary">退出登录</a>
@@ -111,75 +112,6 @@
                     <button onclick="loadLogsPage(currentPage - 1)" id="prevBtn" class="btn btn-sm btn-secondary">上一页</button>
                     <span id="pageInfo" style="margin: 0 15px;">第 1 页 / 共 1 页</span>
                     <button onclick="loadLogsPage(currentPage + 1)" id="nextBtn" class="btn btn-sm btn-secondary">下一页</button>
-                </div>
-            </div>
-        </section>
-
-        <!-- Webhook 通知配置 -->
-        <section class="section">
-            <div class="section-header">
-                <h2>Webhook 通知</h2>
-                <div style="display: flex; gap: 10px;">
-                    <button onclick="testWebhook()" class="btn btn-secondary">测试 Webhook</button>
-                    <button onclick="saveWebhook()" class="btn btn-primary">保存配置</button>
-                </div>
-            </div>
-
-            <div style="max-width: 800px;">
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="webhookEnabled">
-                        启用 Webhook 通知
-                    </label>
-                    <small>启用后，每次签到任务执行完成时会调用 Webhook</small>
-                </div>
-
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="webhookIncludeResponse">
-                        包含签到响应内容
-                    </label>
-                    <small>启用后，Webhook 数据中会包含完整的签到响应内容（response_body）</small>
-                </div>
-
-                <div class="form-group">
-                    <label for="webhookUrl">Webhook URL *</label>
-                    <input type="text" id="webhookUrl" placeholder="https://example.com/webhook">
-                    <small>签到完成后会向此 URL 发送 POST 请求</small>
-                </div>
-
-                <div class="form-group">
-                    <label for="webhookMethod">请求方法</label>
-                    <select id="webhookMethod" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
-                        <option value="POST">POST</option>
-                        <option value="GET">GET</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label for="webhookHeaders">自定义请求头（可选）</label>
-                    <textarea id="webhookHeaders" rows="5" placeholder='{"Authorization": "Bearer token"}'></textarea>
-                    <small style="display: block; margin-top: 5px;">
-                        <strong>JSON 格式示例：</strong><br>
-                        <strong>1. JSON 格式（默认）：</strong>不设置或设置 <code>{"Content-Type": "application/json"}</code><br>
-                        <strong>2. Form 表单格式：</strong><code>{"Content-Type": "application/x-www-form-urlencoded"}</code><br>
-                        <strong>3. Multipart 格式：</strong><code>{"Content-Type": "multipart/form-data"}</code><br>
-                        <strong>4. 自定义认证：</strong><code>{"Authorization": "Bearer your_token"}</code>
-                    </small>
-                </div>
-
-                <div class="webhook-info">
-                    <h4>Webhook 数据格式</h4>
-                    <pre style="background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto;">
-{
-  "title": "账号名称",
-  "account_name": "账号名称",
-  "status": "success",  // success 或 failed
-  "response_code": 200,
-  "date": "2025-12-22 10:00:00",
-  "message": "签到成功",
-  "response_body": "..."  // 仅当启用"包含签到响应内容"时包含此字段
-}</pre>
                 </div>
             </div>
         </section>

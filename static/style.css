@@ -204,6 +204,42 @@ tbody tr:hover {
     color: #721c24;
 }
 
+.badge-warning {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.badge-secondary {
+    background: #e9ecef;
+    color: #6c757d;
+}
+
+/* 响应码徽章 */
+.badge-code-2xx {
+    background: #d4edda;
+    color: #155724;
+}
+
+.badge-code-3xx {
+    background: #d1ecf1;
+    color: #0c5460;
+}
+
+.badge-code-4xx {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.badge-code-5xx {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.badge-code-none {
+    background: #e9ecef;
+    color: #6c757d;
+}
+
 /* 模态框 */
 .modal {
     display: none;
