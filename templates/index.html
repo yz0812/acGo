@@ -12,8 +12,8 @@
             <h1>签到管理系统</h1>
             <div class="header-actions">
                 <a href="{{ url_for('notify') }}" class="btn btn-primary">推送通知</a>
+                <button onclick="showSystemSettingsModal()" class="btn btn-primary">系统设置</button>
                 <button onclick="loadStats()" class="btn btn-secondary">刷新统计</button>
-                <button onclick="showSystemSettingsModal()" class="btn btn-secondary">系统设置</button>
                 <a href="{{ url_for('logout') }}" class="btn btn-secondary">退出登录</a>
             </div>
         </header>
