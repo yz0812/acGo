@@ -4,6 +4,7 @@ import logging
 import re
 import json
 import random
+import shlex
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 import requests
@@ -19,10 +20,53 @@ logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler()
 
 
+def redact_sensitive_data(headers: dict, cookies: dict) -> tuple:
+    """
+    脱敏敏感的 Headers 和 Cookies
+
+    Args:
+        headers: HTTP 请求头字典
+        cookies: Cookie 字典
+
+    Returns:
+        (脱敏后的 headers, 脱敏后的 cookies)
+    """
+    # 定义需要脱敏的敏感键（不区分大小写）
+    sensitive_header_keys = [
+        'authorization',
+        'x-api-key',
+        'x-auth-token',
+        'api-key',
+        'token',
+        'secret',
+        'password',
+        'apikey'
+    ]
+
+    # 脱敏 Headers
+    redacted_headers = {}
+    for key, value in headers.items():
+        if key.lower() in sensitive_header_keys or 'auth' in key.lower():
+            redacted_headers[key] = '***REDACTED***'
+        else:
+            redacted_headers[key] = value
+
+    # 脱敏 Cookies（所有 Cookie 都可能包含敏感信息）
+    redacted_cookies = {}
+    for key, value in cookies.items():
+        # 只保留前 4 个字符用于识别，其余用 * 替换
+        if len(value) > 4:
+            redacted_cookies[key] = value[:4] + '***'
+        else:
+            redacted_cookies[key] = '***'
+
+    return redacted_headers, redacted_cookies
+
+
 def parse_curl_command(curl_cmd: str) -> Dict[str, Any]:
     """
-    解析 curl 命令为 requests 参数
-    
+    解析 curl 命令为 requests 参数（使用 shlex 正确处理引号）
+
     支持各种 curl 格式，包括：
     - 不同的选项顺序
     - 单引号、双引号或无引号
@@ -36,154 +80,113 @@ def parse_curl_command(curl_cmd: str) -> Dict[str, Any]:
         包含 url, method, headers, data 等的字典
     """
     try:
-        # 移除换行符和多余空格
+        # 输入长度限制，防止 DoS 攻击
+        if len(curl_cmd) > 50000:
+            raise ValueError('curl 命令过长（超过 50000 字符）')
+
+        # 只移除行继续符，保留内部空格
         curl_cmd = curl_cmd.replace('\\\n', ' ').replace('\\n', ' ')
-        curl_cmd = re.sub(r'\s+', ' ', curl_cmd).strip()
-        
+        curl_cmd = curl_cmd.strip()
+
         # 确保命令以 curl 开头
         if not curl_cmd.startswith('curl'):
             curl_cmd = 'curl ' + curl_cmd
 
-        # ========== 提取 URL ==========
+        # 使用 shlex 正确解析命令行参数
+        try:
+            tokens = shlex.split(curl_cmd)
+        except ValueError as e:
+            raise ValueError(f'无效的引号或转义: {e}')
+
+        # 初始化变量
         url = None
-        
-        # 方法1: 查找所有 http:// 或 https:// 开头的字符串
-        http_urls = re.findall(r"(https?://[^\s'\"]+)", curl_cmd)
-        if http_urls:
-            url = http_urls[0]
-        
-        # 方法2: 如果没找到，尝试匹配带引号的 URL
-        if not url:
-            url_patterns = [
-                r"curl\s+['\"]([^'\"]+)['\"]",  # curl 'URL'
-                r"curl\s+([^\s-][^\s]*)",        # curl URL (无引号，不以-开头)
-            ]
-            for pattern in url_patterns:
-                url_match = re.search(pattern, curl_cmd)
-                if url_match:
-                    potential_url = url_match.group(1)
-                    if potential_url.startswith(('http://', 'https://')):
-                        url = potential_url
-                        break
-        
-        if not url:
-            raise ValueError('无法解析 URL，请确保 curl 命令包含完整的 URL（http:// 或 https://）')
-
-        # ========== 提取 Method ==========
         method = 'GET'
-
-        # 先检查非标准格式: curl METHOD URL (例如 curl POST 'https://...')
-        non_standard_pattern = r"^curl\s+([A-Z]+)\s+['\"]?https?://"
-        non_standard_match = re.search(non_standard_pattern, curl_cmd)
-        if non_standard_match:
-            method = non_standard_match.group(1).upper()
-        else:
-            # 标准格式: -X POST 或 --request POST
-            method_patterns = [
-                r"(?:-X|--request)\s+['\"]?([A-Z]+)['\"]?",
-            ]
-            for pattern in method_patterns:
-                method_match = re.search(pattern, curl_cmd)
-                if method_match:
-                    method = method_match.group(1).upper()
-                    break
-
-        # ========== 提取 Headers ==========
         headers = {}
-        
-        # 支持多种格式: -H, --header
-        header_patterns = [
-            r"(?:-H|--header)\s+['\"]([^:]+):\s*([^'\"]+)['\"]",  # -H 'key: value'
-            r"(?:-H|--header)\s+['\"]([^:]+):\s*([^'\"]*)['\"]",  # -H 'key: ' (空值)
-        ]
-        
-        for pattern in header_patterns:
-            header_matches = re.findall(pattern, curl_cmd)
-            for key, value in header_matches:
-                headers[key.strip()] = value.strip()
-
-        # ========== 提取 User-Agent ==========
-        user_agent_patterns = [
-            r"(?:-A|--user-agent)\s+['\"]([^'\"]+)['\"]",
-        ]
-        for pattern in user_agent_patterns:
-            ua_match = re.search(pattern, curl_cmd)
-            if ua_match:
-                headers['User-Agent'] = ua_match.group(1)
-                break
-
-        # ========== 提取 Referer ==========
-        referer_patterns = [
-            r"(?:-e|--referer)\s+['\"]([^'\"]+)['\"]",
-        ]
-        for pattern in referer_patterns:
-            ref_match = re.search(pattern, curl_cmd)
-            if ref_match:
-                headers['Referer'] = ref_match.group(1)
-                break
-
-        # ========== 提取 Cookies ==========
         cookies = {}
-        
-        cookie_patterns = [
-            r"(?:-b|--cookie)\s+['\"]([^'\"]+)['\"]",
-        ]
-        
-        for pattern in cookie_patterns:
-            cookie_match = re.search(pattern, curl_cmd)
-            if cookie_match:
-                cookie_str = cookie_match.group(1)
-                # 解析 cookie 字符串
+        data_parts = []
+
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+
+            # 跳过 'curl' 命令本身
+            if token == 'curl':
+                i += 1
+                continue
+
+            # 提取 URL (--url 或第一个非选项 http(s) 参数)
+            if token == '--url' and i + 1 < len(tokens):
+                url = tokens[i + 1]
+                i += 2
+                continue
+            elif not token.startswith('-') and token.startswith(('http://', 'https://')) and url is None:
+                url = token
+                i += 1
+                continue
+
+            # 提取 Method
+            if token in ('-X', '--request') and i + 1 < len(tokens):
+                method = tokens[i + 1].upper()
+                i += 2
+                continue
+
+            # 提取 Headers
+            if token in ('-H', '--header') and i + 1 < len(tokens):
+                header_value = tokens[i + 1]
+                if ':' in header_value:
+                    key, value = header_value.split(':', 1)
+                    headers[key.strip()] = value.strip()
+                i += 2
+                continue
+
+            # 提取 User-Agent
+            if token in ('-A', '--user-agent') and i + 1 < len(tokens):
+                headers['User-Agent'] = tokens[i + 1]
+                i += 2
+                continue
+
+            # 提取 Referer
+            if token in ('-e', '--referer') and i + 1 < len(tokens):
+                headers['Referer'] = tokens[i + 1]
+                i += 2
+                continue
+
+            # 提取 Cookies
+            if token in ('-b', '--cookie') and i + 1 < len(tokens):
+                cookie_str = tokens[i + 1]
                 for item in cookie_str.split(';'):
                     item = item.strip()
                     if '=' in item:
                         k, v = item.split('=', 1)
                         cookies[k.strip()] = v.strip()
-                break
+                i += 2
+                continue
 
-        # ========== 提取 Data ==========
-        data = None
-
-        # 支持多种格式: -d, --data, --data-raw, --data-binary, --data-urlencode
-        # 改进：分别处理单引号和双引号，避免 JSON 内部引号干扰
-        data_patterns = [
-            r"(?:--data-raw)\s+'([^']*)'",          # --data-raw '...' (单引号包裹)
-            r'(?:--data-raw)\s+"([^"]*)"',          # --data-raw "..." (双引号包裹)
-            r"(?:--data-binary)\s+'([^']*)'",       # --data-binary '...'
-            r'(?:--data-binary)\s+"([^"]*)"',       # --data-binary "..."
-            r"(?:--data|--data-urlencode)\s+'([^']*)'",  # --data '...'
-            r'(?:--data|--data-urlencode)\s+"([^"]*)"',  # --data "..."
-            r"(?:-d)\s+'([^']*)'",                  # -d '...'
-            r'(?:-d)\s+"([^"]*)"',                  # -d "..."
-        ]
-
-        for pattern in data_patterns:
-            data_match = re.search(pattern, curl_cmd, re.DOTALL)
-            if data_match:
-                data = data_match.group(1)
-                # 如果有 data 但没有指定 method，自动设置为 POST
+            # 提取 Data (支持多个 -d)
+            if token in ('-d', '--data', '--data-raw', '--data-binary', '--data-urlencode') and i + 1 < len(tokens):
+                data_parts.append(tokens[i + 1])
                 if method == 'GET':
                     method = 'POST'
-                break
+                i += 2
+                continue
 
-        # ========== 提取 Form Data ==========
-        # 支持 -F 或 --form (multipart/form-data)
-        form_patterns = [
-            r"(?:-F|--form)\s+['\"]([^'\"]+)['\"]",
-        ]
-        
-        form_data = []
-        for pattern in form_patterns:
-            form_matches = re.findall(pattern, curl_cmd)
-            if form_matches:
-                form_data.extend(form_matches)
+            # 提取 Form Data
+            if token in ('-F', '--form') and i + 1 < len(tokens):
+                data_parts.append(tokens[i + 1])
                 if method == 'GET':
                     method = 'POST'
-        
-        # 如果有 form data，转换为 data 字符串（简化处理）
-        if form_data and not data:
-            # 这里简化处理，实际应该用 multipart/form-data
-            data = '&'.join(form_data)
+                i += 2
+                continue
+
+            # 其他未识别的参数，跳过
+            i += 1
+
+        # 验证 URL
+        if not url:
+            raise ValueError('无法解析 URL，请确保 curl 命令包含完整的 URL（http:// 或 https://）')
+
+        # 合并多个 data 参数
+        data = '&'.join(data_parts) if data_parts else None
 
         return {
             'url': url,
@@ -295,8 +298,13 @@ def send_webhook_notification(account_name: str, status: str, response_code: int
         if headers_config and headers_config.value:
             try:
                 headers = json.loads(headers_config.value)
+                # 类型验证：确保是字典
+                if not isinstance(headers, dict):
+                    logger.warning('Webhook headers 不是有效的 JSON 对象，已重置为空字典')
+                    headers = {}
             except json.JSONDecodeError:
                 logger.error('Webhook headers JSON 格式错误')
+                headers = {}
 
         # 检查是否包含响应内容
         include_response_config = Config.get_or_none(Config.key == 'webhook_include_response')
@@ -380,129 +388,156 @@ def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check:
     """
     db.connect(reuse_if_open=True)
 
+    # 初始化变量，避免异常时未定义
+    account = None
+    req_params = {}
+
     try:
         account = Account.get_by_id(account_id)
+    except Exception as e:
+        logger.error(f'获取账号失败: account_id={account_id}, error={e}')
+        db.close()
+        return {'status': 'failed', 'error': f'账号不存在: {account_id}'}
 
+    try:
         if not skip_enabled_check and not account.enabled:
            # logger.info(f'账号 {account.name} 已禁用，跳过签到')
             return {'status': 'skipped', 'message': '账号已禁用'}
-        
+
         # 解析 curl 命令
         req_params = parse_curl_command(account.curl_command)
 
-        # 执行请求
-       # logger.info(f'开始执行签到: {account.name} (尝试 {retry_attempt + 1}/{account.retry_count + 1})')
+        # 使用循环重试，避免递归导致栈溢出和线程阻塞
+        for attempt in range(account.retry_count + 1):
+            try:
+                # 执行请求
+                # logger.info(f'开始执行签到: {account.name} (尝试 {attempt + 1}/{account.retry_count + 1})')
 
-        response = requests.request(
-            method=req_params['method'],
-            url=req_params['url'],
-            headers=req_params['headers'],
-            data=req_params['data'],
-            cookies=req_params['cookies'],
-            timeout=30
-        )
+                response = requests.request(
+                    method=req_params['method'],
+                    url=req_params['url'],
+                    headers=req_params['headers'],
+                    data=req_params['data'],
+                    cookies=req_params['cookies'],
+                    timeout=30
+                )
 
-        # 判断是否成功（2xx 状态码）
-        is_success = 200 <= response.status_code < 300
+                # 判断是否成功（2xx 状态码）
+                is_success = 200 <= response.status_code < 300
 
-        # 记录日志（保存请求参数）
-        log = CheckinLog.create(
-            account=account,
-            status='success' if is_success else 'failed',
-            response_code=response.status_code,
-            response_body=response.text[:5000],  # 限制长度（增加到5000字符）
-            error_message=None if is_success else f'HTTP {response.status_code}',
-            executed_at=datetime.now(),
-            # 保存请求参数
-            request_method=req_params['method'],
-            request_url=req_params['url'],
-            request_headers=json.dumps(req_params['headers'], ensure_ascii=False) if req_params['headers'] else None,
-            request_cookies=json.dumps(req_params['cookies'], ensure_ascii=False) if req_params['cookies'] else None,
-            request_data=req_params['data']
-        )
-        
-        if is_success:
-            # logger.info(f'签到成功: {account.name} - HTTP {response.status_code}')
+                # 脱敏敏感信息
+                redacted_headers, redacted_cookies = redact_sensitive_data(
+                    req_params.get('headers', {}),
+                    req_params.get('cookies', {})
+                )
 
-            # 调用 Webhook
-            send_webhook_notification(
-                account_name=account.name,
-                status='success',
-                response_code=response.status_code,
-                message='签到成功',
-                response_body=response.text[:5000]  # 传递响应内容
-            )
+                # 记录日志（保存请求参数，敏感信息已脱敏）
+                log = CheckinLog.create(
+                    account=account,
+                    status='success' if is_success else 'failed',
+                    response_code=response.status_code,
+                    response_body=response.text[:5000],  # 限制长度（增加到5000字符）
+                    error_message=None if is_success else f'HTTP {response.status_code}',
+                    executed_at=datetime.now(),
+                    # 保存请求参数（敏感信息已脱敏）
+                    request_method=req_params['method'],
+                    request_url=req_params['url'],
+                    request_headers=json.dumps(redacted_headers, ensure_ascii=False) if redacted_headers else None,
+                    request_cookies=json.dumps(redacted_cookies, ensure_ascii=False) if redacted_cookies else None,
+                    request_data=req_params['data']
+                )
 
-            return {
-                'status': 'success',
-                'code': response.status_code,
-                'log_id': log.id
-            }
-        else:
-            # 失败且未达到重试上限，进行重试
-            if retry_attempt < account.retry_count:
-                logger.warning(f'签到失败，{account.retry_interval}秒后重试: {account.name}')
-                time.sleep(account.retry_interval)
-                return execute_checkin(account_id, retry_attempt + 1, skip_enabled_check)
-            else:
-                logger.error(f'签到失败（已达重试上限）: {account.name}')
+                if is_success:
+                    # logger.info(f'签到成功: {account.name} - HTTP {response.status_code}')
 
-                # 调用 Webhook
+                    # 调用 Webhook
+                    send_webhook_notification(
+                        account_name=account.name,
+                        status='success',
+                        response_code=response.status_code,
+                        message='签到成功',
+                        response_body=response.text[:5000]  # 传递响应内容
+                    )
+
+                    return {
+                        'status': 'success',
+                        'code': response.status_code,
+                        'log_id': log.id
+                    }
+                else:
+                    # 失败且未达到重试上限，继续重试
+                    if attempt < account.retry_count:
+                        logger.warning(f'签到失败，{account.retry_interval}秒后重试: {account.name}')
+                        time.sleep(account.retry_interval)
+                        continue  # 继续下一次重试
+                    else:
+                        logger.error(f'签到失败（已达重试上限）: {account.name}')
+
+                        # 调用 Webhook
+                        send_webhook_notification(
+                            account_name=account.name,
+                            status='failed',
+                            response_code=response.status_code,
+                            message=f'签到失败: HTTP {response.status_code}',
+                            response_body=response.text[:5000]  # 传递响应内容
+                        )
+
+                        return {
+                            'status': 'failed',
+                            'code': response.status_code,
+                            'log_id': log.id
+                        }
+
+            except requests.RequestException as e:
+                # 网络错误
+                error_msg = str(e)
+                logger.error(f'请求异常: {account.name} - {error_msg}')
+
+                # 脱敏敏感信息
+                redacted_headers, redacted_cookies = redact_sensitive_data(
+                    req_params.get('headers', {}),
+                    req_params.get('cookies', {})
+                )
+
+                CheckinLog.create(
+                    account=account,
+                    status='failed',
+                    response_code=None,
+                    response_body=None,
+                    error_message=error_msg[:500],
+                    executed_at=datetime.now(),
+                    # 保存请求参数（敏感信息已脱敏）
+                    request_method=req_params.get('method'),
+                    request_url=req_params.get('url'),
+                    request_headers=json.dumps(redacted_headers, ensure_ascii=False) if redacted_headers else None,
+                    request_cookies=json.dumps(redacted_cookies, ensure_ascii=False) if redacted_cookies else None,
+                    request_data=req_params.get('data')
+                )
+
+                # 重试逻辑
+                if attempt < account.retry_count:
+                    logger.warning(f'网络异常，{account.retry_interval}秒后重试: {account.name}')
+                    time.sleep(account.retry_interval)
+                    continue  # 继续下一次重试
+
+                # 最后一次失败，调用 Webhook
                 send_webhook_notification(
                     account_name=account.name,
                     status='failed',
-                    response_code=response.status_code,
-                    message=f'签到失败: HTTP {response.status_code}',
-                    response_body=response.text[:5000]  # 传递响应内容
+                    response_code=None,
+                    message=f'网络异常: {error_msg}'
                 )
 
-                return {
-                    'status': 'failed',
-                    'code': response.status_code,
-                    'log_id': log.id
-                }
-                
-    except requests.RequestException as e:
-        # 网络错误
-        error_msg = str(e)
-        logger.error(f'请求异常: {account.name} - {error_msg}')
-
-        CheckinLog.create(
-            account=account,
-            status='failed',
-            response_code=None,
-            response_body=None,
-            error_message=error_msg[:500],
-            executed_at=datetime.now(),
-            # 保存请求参数
-            request_method=req_params.get('method'),
-            request_url=req_params.get('url'),
-            request_headers=json.dumps(req_params.get('headers', {}), ensure_ascii=False) if req_params.get('headers') else None,
-            request_cookies=json.dumps(req_params.get('cookies', {}), ensure_ascii=False) if req_params.get('cookies') else None,
-            request_data=req_params.get('data')
-        )
-        
-        # 重试逻辑
-        if retry_attempt < account.retry_count:
-            logger.warning(f'网络异常，{account.retry_interval}秒后重试: {account.name}')
-            time.sleep(account.retry_interval)
-            return execute_checkin(account_id, retry_attempt + 1, skip_enabled_check)
-
-        # 调用 Webhook
-        send_webhook_notification(
-            account_name=account.name,
-            status='failed',
-            response_code=None,
-            message=f'网络异常: {error_msg}'
-        )
-
-        return {'status': 'failed', 'error': error_msg}
+                return {'status': 'failed', 'error': error_msg}
 
     except Exception as e:
         logger.error(f'未知错误: {account.name} - {e}')
 
-        # 尝试获取 req_params，如果解析失败则为空
-        req_params_safe = locals().get('req_params', {})
+        # 脱敏敏感信息
+        redacted_headers, redacted_cookies = redact_sensitive_data(
+            req_params.get('headers', {}),
+            req_params.get('cookies', {})
+        )
 
         CheckinLog.create(
             account=account,
@@ -511,12 +546,12 @@ def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check:
             response_body=None,
             error_message=str(e)[:500],
             executed_at=datetime.now(),
-            # 保存请求参数
-            request_method=req_params_safe.get('method'),
-            request_url=req_params_safe.get('url'),
-            request_headers=json.dumps(req_params_safe.get('headers', {}), ensure_ascii=False) if req_params_safe.get('headers') else None,
-            request_cookies=json.dumps(req_params_safe.get('cookies', {}), ensure_ascii=False) if req_params_safe.get('cookies') else None,
-            request_data=req_params_safe.get('data')
+            # 保存请求参数（敏感信息已脱敏）
+            request_method=req_params.get('method'),
+            request_url=req_params.get('url'),
+            request_headers=json.dumps(redacted_headers, ensure_ascii=False) if redacted_headers else None,
+            request_cookies=json.dumps(redacted_cookies, ensure_ascii=False) if redacted_cookies else None,
+            request_data=req_params.get('data')
         )
 
         # 调用 Webhook
@@ -639,44 +674,50 @@ def start_scheduler():
 def auto_clean_logs():
     """自动清理超出限制的签到记录"""
     db.connect(reuse_if_open=True)
-    
+
     try:
         # 检查是否启用自动清理
         auto_clean_config = Config.get_or_none(Config.key == 'auto_clean_logs')
         if not auto_clean_config or auto_clean_config.value != 'true':
             logger.info('自动清理未启用，跳过')
             return
-        
-        # 获取最大记录数
+
+        # 获取最大记录数，添加类型验证
         max_logs_config = Config.get_or_none(Config.key == 'max_logs_count')
-        max_logs = int(max_logs_config.value) if max_logs_config else 500
-        
+        try:
+            max_logs = int(max_logs_config.value) if max_logs_config else 500
+        except (ValueError, AttributeError):
+            max_logs = 500
+            logger.warning('无效的 max_logs_count 配置，使用默认值 500')
+
         # 获取当前记录总数
         total_logs = CheckinLog.select().count()
-        
+
         if total_logs <= max_logs:
             logger.info(f'当前记录数 {total_logs} 未超过限制 {max_logs}，无需清理')
             return
-        
+
         # 计算需要删除的记录数
         to_delete = total_logs - max_logs
-        
-        # 获取最旧的 N 条记录的 ID
-        old_logs = (CheckinLog
-                    .select(CheckinLog.id)
-                    .order_by(CheckinLog.executed_at.asc())
-                    .limit(to_delete))
-        
-        old_ids = [log.id for log in old_logs]
-        
-        # 删除这些记录
-        deleted = CheckinLog.delete().where(CheckinLog.id.in_(old_ids)).execute()
-        
+
+        # 使用事务保护，避免并发问题
+        with db.atomic():
+            # 使用子查询直接删除，避免内存问题和参数限制
+            subquery = (CheckinLog
+                        .select(CheckinLog.id)
+                        .order_by(CheckinLog.executed_at.asc())
+                        .limit(to_delete))
+
+            deleted = (CheckinLog
+                       .delete()
+                       .where(CheckinLog.id.in_(subquery))
+                       .execute())
+
         logger.info(f'自动清理完成：删除了 {deleted} 条旧记录，保留最新 {max_logs} 条')
-        
+
     except Exception as e:
         logger.error(f'自动清理失败: {e}')
-    
+
     finally:
         db.close()
 
