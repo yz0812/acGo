@@ -11,6 +11,7 @@ import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from .models import Account, CheckinLog, Config, db
+from .notifier import send_all_notifications
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -18,49 +19,6 @@ logger = logging.getLogger(__name__)
 
 # 全局调度器实例
 scheduler = BackgroundScheduler()
-
-
-def redact_sensitive_data(headers: dict, cookies: dict) -> tuple:
-    """
-    脱敏敏感的 Headers 和 Cookies
-
-    Args:
-        headers: HTTP 请求头字典
-        cookies: Cookie 字典
-
-    Returns:
-        (脱敏后的 headers, 脱敏后的 cookies)
-    """
-    # 定义需要脱敏的敏感键（不区分大小写）
-    sensitive_header_keys = [
-        'authorization',
-        'x-api-key',
-        'x-auth-token',
-        'api-key',
-        'token',
-        'secret',
-        'password',
-        'apikey'
-    ]
-
-    # 脱敏 Headers
-    redacted_headers = {}
-    for key, value in headers.items():
-        if key.lower() in sensitive_header_keys or 'auth' in key.lower():
-            redacted_headers[key] = '***REDACTED***'
-        else:
-            redacted_headers[key] = value
-
-    # 脱敏 Cookies（所有 Cookie 都可能包含敏感信息）
-    redacted_cookies = {}
-    for key, value in cookies.items():
-        # 只保留前 4 个字符用于识别，其余用 * 替换
-        if len(value) > 4:
-            redacted_cookies[key] = value[:4] + '***'
-        else:
-            redacted_cookies[key] = '***'
-
-    return redacted_headers, redacted_cookies
 
 
 def parse_curl_command(curl_cmd: str) -> Dict[str, Any]:
@@ -269,111 +227,6 @@ def execute_checkin_with_random_delay(account_id: int, max_delay_seconds: Option
     execute_checkin(account_id)
 
 
-def send_webhook_notification(account_name: str, status: str, response_code: int = None, message: str = '', response_body: str = None):
-    """
-    发送 Webhook 通知
-
-    Args:
-        account_name: 账号名称
-        status: 状态 (success/failed)
-        response_code: 响应状态码
-        message: 消息内容
-        response_body: 响应内容（可选）
-    """
-    try:
-        # 获取 Webhook 配置
-        enabled_config = Config.get_or_none(Config.key == 'webhook_enabled')
-        if not enabled_config or enabled_config.value != 'true':
-            return  # Webhook 未启用
-
-        url_config = Config.get_or_none(Config.key == 'webhook_url')
-        if not url_config or not url_config.value:
-            return  # 未配置 URL
-
-        method_config = Config.get_or_none(Config.key == 'webhook_method')
-        method = method_config.value if method_config else 'POST'
-
-        headers_config = Config.get_or_none(Config.key == 'webhook_headers')
-        headers = {}
-        if headers_config and headers_config.value:
-            try:
-                headers = json.loads(headers_config.value)
-                # 类型验证：确保是字典
-                if not isinstance(headers, dict):
-                    logger.warning('Webhook headers 不是有效的 JSON 对象，已重置为空字典')
-                    headers = {}
-            except json.JSONDecodeError:
-                logger.error('Webhook headers JSON 格式错误')
-                headers = {}
-
-        # 检查是否包含响应内容
-        include_response_config = Config.get_or_none(Config.key == 'webhook_include_response')
-        include_response = include_response_config and include_response_config.value == 'true'
-
-        # 构造数据
-        payload = {
-            'title': account_name,
-            'account_name': account_name,
-            'status': status,
-            'response_code': response_code,
-            'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'message': message
-        }
-
-        # 如果启用了包含响应内容，且有响应内容，则添加
-        if include_response and response_body:
-            payload['response_body'] = response_body
-
-        # 发送请求
-        if method.upper() == 'POST':
-            # 检测 Content-Type，决定发送格式
-            content_type = headers.get('Content-Type', 'application/json').lower()
-
-            if 'multipart/form-data' in content_type:
-                # Multipart 格式：移除 Content-Type，让 requests 自动生成 boundary
-                headers.pop('Content-Type', None)
-                # 将 payload 转换为 files 格式
-                files = {k: (None, str(v)) for k, v in payload.items()}
-                response = requests.post(
-                    url_config.value,
-                    files=files,
-                    headers=headers,
-                    timeout=10
-                )
-            elif 'application/x-www-form-urlencoded' in content_type:
-                # Form 表单格式
-                response = requests.post(
-                    url_config.value,
-                    data=payload,
-                    headers=headers,
-                    timeout=10
-                )
-            else:
-                # 默认 JSON 格式
-                headers['Content-Type'] = 'application/json'
-                response = requests.post(
-                    url_config.value,
-                    json=payload,
-                    headers=headers,
-                    timeout=10
-                )
-        else:  # GET
-            response = requests.get(
-                url_config.value,
-                params=payload,
-                headers=headers,
-                timeout=10
-            )
-
-      #  if 200 <= response.status_code < 300:
-      #      logger.info(f'Webhook 通知发送成功: {account_name}')
-      #  else:
-      #      logger.warning(f'Webhook 通知失败: HTTP {response.status_code}')
-
-    except Exception as e:
-        logger.error(f'Webhook 通知异常: {e}')
-
-
 def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check: bool = False) -> Dict[str, Any]:
     """
     执行签到任务
@@ -425,11 +278,8 @@ def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check:
                 # 判断是否成功（2xx 状态码）
                 is_success = 200 <= response.status_code < 300
 
-                # 脱敏敏感信息
-                redacted_headers, redacted_cookies = redact_sensitive_data(
-                    req_params.get('headers', {}),
-                    req_params.get('cookies', {})
-                )
+                headers = req_params.get('headers', {})
+                cookies = req_params.get('cookies', {})
 
                 # 记录日志（保存请求参数，敏感信息已脱敏）
                 log = CheckinLog.create(
@@ -442,8 +292,8 @@ def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check:
                     # 保存请求参数（敏感信息已脱敏）
                     request_method=req_params['method'],
                     request_url=req_params['url'],
-                    request_headers=json.dumps(redacted_headers, ensure_ascii=False) if redacted_headers else None,
-                    request_cookies=json.dumps(redacted_cookies, ensure_ascii=False) if redacted_cookies else None,
+                    request_headers=json.dumps(headers, ensure_ascii=False) if headers else None,
+                    request_cookies=json.dumps(cookies, ensure_ascii=False) if cookies else None,
                     request_data=req_params['data']
                 )
 
@@ -451,7 +301,7 @@ def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check:
                     # logger.info(f'签到成功: {account.name} - HTTP {response.status_code}')
 
                     # 调用 Webhook
-                    send_webhook_notification(
+                    send_all_notifications(
                         account_name=account.name,
                         status='success',
                         response_code=response.status_code,
@@ -474,7 +324,7 @@ def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check:
                         logger.error(f'签到失败（已达重试上限）: {account.name}')
 
                         # 调用 Webhook
-                        send_webhook_notification(
+                        send_all_notifications(
                             account_name=account.name,
                             status='failed',
                             response_code=response.status_code,
@@ -493,11 +343,8 @@ def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check:
                 error_msg = str(e)
                 logger.error(f'请求异常: {account.name} - {error_msg}')
 
-                # 脱敏敏感信息
-                redacted_headers, redacted_cookies = redact_sensitive_data(
-                    req_params.get('headers', {}),
-                    req_params.get('cookies', {})
-                )
+                headers = req_params.get('headers', {})
+                cookies = req_params.get('cookies', {})
 
                 CheckinLog.create(
                     account=account,
@@ -509,8 +356,8 @@ def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check:
                     # 保存请求参数（敏感信息已脱敏）
                     request_method=req_params.get('method'),
                     request_url=req_params.get('url'),
-                    request_headers=json.dumps(redacted_headers, ensure_ascii=False) if redacted_headers else None,
-                    request_cookies=json.dumps(redacted_cookies, ensure_ascii=False) if redacted_cookies else None,
+                    request_headers=json.dumps(headers, ensure_ascii=False) if headers else None,
+                    request_cookies=json.dumps(cookies, ensure_ascii=False) if cookies else None,
                     request_data=req_params.get('data')
                 )
 
@@ -521,7 +368,7 @@ def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check:
                     continue  # 继续下一次重试
 
                 # 最后一次失败，调用 Webhook
-                send_webhook_notification(
+                send_all_notifications(
                     account_name=account.name,
                     status='failed',
                     response_code=None,
@@ -533,11 +380,8 @@ def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check:
     except Exception as e:
         logger.error(f'未知错误: {account.name} - {e}')
 
-        # 脱敏敏感信息
-        redacted_headers, redacted_cookies = redact_sensitive_data(
-            req_params.get('headers', {}),
-            req_params.get('cookies', {})
-        )
+        headers = req_params.get('headers', {})
+        cookies = req_params.get('cookies', {})
 
         CheckinLog.create(
             account=account,
@@ -549,13 +393,13 @@ def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check:
             # 保存请求参数（敏感信息已脱敏）
             request_method=req_params.get('method'),
             request_url=req_params.get('url'),
-            request_headers=json.dumps(redacted_headers, ensure_ascii=False) if redacted_headers else None,
-            request_cookies=json.dumps(redacted_cookies, ensure_ascii=False) if redacted_cookies else None,
+            request_headers=json.dumps(headers, ensure_ascii=False) if headers else None,
+            request_cookies=json.dumps(cookies, ensure_ascii=False) if cookies else None,
             request_data=req_params.get('data')
         )
 
         # 调用 Webhook
-        send_webhook_notification(
+        send_all_notifications(
             account_name=account.name,
             status='failed',
             response_code=None,

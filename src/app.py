@@ -20,6 +20,7 @@ from .scheduler import (
     parse_curl_command,
     parse_random_cron
 )
+from .notifier import send_telegram, send_dingtalk, send_wecom, send_feishu, NOTIFY_CONFIG_KEYS
 
 # 获取项目根目录（src 的父目录）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -888,13 +889,6 @@ def change_password():
 # ==================== 推送通知渠道 API ====================
 
 # 通知渠道配置键名列表
-NOTIFY_CONFIG_KEYS = [
-    'telegram_enabled', 'telegram_bot_token', 'telegram_user_id', 'telegram_api_url',
-    'wecom_enabled', 'wecom_webhook_key', 'wecom_api_url',
-    'dingtalk_enabled', 'dingtalk_access_token', 'dingtalk_secret', 'dingtalk_api_url',
-    'feishu_enabled', 'feishu_webhook_url', 'feishu_secret'
-]
-
 
 @app.route('/api/notify/config', methods=['GET'])
 @login_required
@@ -983,79 +977,6 @@ def _get_notify_config(prefix: str) -> dict:
     return result
 
 
-def _send_telegram(bot_token: str, user_id: str, message: str, api_url: str = '') -> dict:
-    """发送 Telegram 消息"""
-    base_url = api_url.rstrip('/') if api_url else 'https://api.telegram.org'
-    url = f"{base_url}/bot{bot_token}/sendMessage"
-
-    payload = {
-        'chat_id': user_id,
-        'text': message,
-        'parse_mode': 'HTML'
-    }
-
-    response = requests.post(url, json=payload, timeout=10)
-    return {'status_code': response.status_code, 'text': response.text}
-
-
-def _send_wecom(webhook_key: str, message: str, api_url: str = '') -> dict:
-    """发送企业微信消息"""
-    base_url = api_url.rstrip('/') if api_url else 'https://qyapi.weixin.qq.com'
-    url = f"{base_url}/cgi-bin/webhook/send?key={webhook_key}"
-
-    payload = {
-        'msgtype': 'text',
-        'text': {'content': message}
-    }
-
-    response = requests.post(url, json=payload, timeout=10)
-    return {'status_code': response.status_code, 'text': response.text}
-
-
-def _send_dingtalk(access_token: str, message: str, secret: str = '', api_url: str = '') -> dict:
-    """发送钉钉消息"""
-    base_url = api_url.rstrip('/') if api_url else 'https://oapi.dingtalk.com'
-    url = f"{base_url}/robot/send?access_token={access_token}"
-
-    # 加签
-    if secret:
-        timestamp = str(round(time.time() * 1000))
-        secret_enc = secret.encode('utf-8')
-        string_to_sign = f'{timestamp}\n{secret}'
-        string_to_sign_enc = string_to_sign.encode('utf-8')
-        hmac_code = hmac.new(secret_enc, string_to_sign_enc, digestmod=hashlib.sha256).digest()
-        sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
-        url += f"&timestamp={timestamp}&sign={sign}"
-
-    payload = {
-        'msgtype': 'text',
-        'text': {'content': message}
-    }
-
-    response = requests.post(url, json=payload, timeout=10)
-    return {'status_code': response.status_code, 'text': response.text}
-
-
-def _send_feishu(webhook_url: str, message: str, secret: str = '') -> dict:
-    """发送飞书消息"""
-    payload = {
-        'msg_type': 'text',
-        'content': {'text': message}
-    }
-
-    # 加签（飞书签名算法：base64(hmac_sha256(secret, timestamp + "\n" + secret))）
-    if secret:
-        timestamp = str(int(time.time()))
-        string_to_sign = f'{timestamp}\n{secret}'
-        hmac_code = hmac.new(secret.encode('utf-8'), string_to_sign.encode('utf-8'), digestmod=hashlib.sha256).digest()
-        sign = base64.b64encode(hmac_code).decode('utf-8')
-        payload['timestamp'] = timestamp
-        payload['sign'] = sign
-
-    response = requests.post(webhook_url, json=payload, timeout=10)
-    return {'status_code': response.status_code, 'text': response.text}
-
-
 @app.route('/api/notify/test/telegram', methods=['POST'])
 @login_required
 def test_telegram():
@@ -1070,7 +991,7 @@ def test_telegram():
 
         message = f"🔔 ACGO 签到系统测试通知\n\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n状态: 测试成功"
 
-        result = _send_telegram(
+        result = send_telegram(
             cfg['bot_token'],
             cfg['user_id'],
             message,
@@ -1103,7 +1024,7 @@ def test_wecom():
 
         message = f"🔔 ACGO 签到系统测试通知\n\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n状态: 测试成功"
 
-        result = _send_wecom(
+        result = send_wecom(
             cfg['webhook_key'],
             message,
             cfg.get('api_url', '')
@@ -1135,7 +1056,7 @@ def test_dingtalk():
 
         message = f"🔔 ACGO 签到系统测试通知\n\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n状态: 测试成功"
 
-        result = _send_dingtalk(
+        result = send_dingtalk(
             cfg['access_token'],
             message,
             cfg.get('secret', ''),
@@ -1168,7 +1089,7 @@ def test_feishu():
 
         message = f"🔔 ACGO 签到系统测试通知\n\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n状态: 测试成功"
 
-        result = _send_feishu(
+        result = send_feishu(
             cfg['webhook_url'],
             message,
             cfg.get('secret', '')
