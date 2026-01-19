@@ -8,7 +8,7 @@ import base64
 import urllib.parse
 from datetime import datetime
 import requests
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_from_directory
 from .models import Account, CheckinLog, Config, db, init_db
 from .auth import login_required, check_password
 from .scheduler import (
@@ -38,6 +38,12 @@ init_db()
 
 # 启动调度器
 start_scheduler()
+
+
+@app.route('/favicon.ico')
+def favicon():
+    """返回 favicon"""
+    return send_from_directory(app.static_folder, 'favicon.ico', mimetype='image/vnd.microsoft.icon')
 
 
 @app.route('/login', methods=['GET', 'POST'])
