@@ -17,9 +17,34 @@
 - ✅ **系统设置**：Web 界面管理所有系统配置
 - ✅ **轻量级**：基于 SQLite，无需额外数据库
 
+## 1 核 1G 部署
+
+建议使用仓库中的 `docker-compose.yml`，默认限制容器为 1 CPU / 640MiB、128 个进程/线程，并配置日志轮转。镜像构建建议在开发机或 CI 完成。代码更新后执行 `docker compose up -d --build`；仅拉取旧的预构建镜像不会包含这些改动。
+
+- **唯一入口**：`python run.py` 使用生产级 Waitress；数据库初始化和调度器不在模块导入时启动。数据目录有进程锁，不能启用多个实例共用同一目录。
+- **执行额度**：默认 2 个 HTTP 工作线程、1 个脚本工作线程，最多 32 个未完成任务。手动和定时共用队列，同一账号的重复提交返回现有执行 ID。
+- **等待与重试**：等待状态保存在 SQLite，重试不占线程。重启后继续等待中的任务；执行中崩溃的任务标记为 `interrupted` 并写日志，避免自动重放造成重复签到。配置修改会取消旧待执行项；已发出的外部请求无法撤回。
+- **通知**：独立持久化队列，按渠道最多重试 3 次；通知失败不会再次执行签到。通知处于“发送成功但还未落库”时崩溃，恢复后可能重复发送该渠道。
+- **响应限制**：HTTP 单次读取上限默认 128KiB，同时限制压缩前后的字节数；最多跟随 5 次重定向。日志保存最多 5000 字符，完整详情按需加载。
+- **脚本限制**：默认 60 秒、进程树 RSS 监测额度 192MiB、最多 8 个进程，输出通过管道有界读取。Node.js 堆额度默认 96MiB。Linux 另有限制 CPU 时间、文件描述符和 Python 地址空间。
+- **内存边界**：RSS 是每 20ms 采样的终止条件，不是内核硬上限；Python 地址空间/Node 堆上限也不等于总 RSS。需要严格的脚本进程树内存上限时，配置已委派的 cgroup v2 目录 `SCRIPT_CGROUP_ROOT`（需 memory/pids 控制器）；配置不可用时脚本拒绝启动。Compose 的 640MiB 是整个容器硬上限。
+- **日志与数据库**：WAL + 显式索引，默认保留 500 条日志；每 10 秒以 200 行一批清理，每轮最多工作约 1 秒。已有数据库的日志开关会保留，升级后在系统设置中确认开启。正常停止后再复制数据目录备份。
+- **导入导出**：服务端分批读取导出；页面自动分批导入，每个请求最多 100 个账号且正文最多 2MiB。
+
+资源参数见 `.env.example`。新增的资源参数每次启动读取，数据库中的密码、日志开关等业务配置仍通过页面维护。API 返回形状与手动执行方式已有变化，外部调用方需按上面的接口说明适配。
+
+验证命令：
+
+```bash
+python -m unittest discover -s tests -v
+python tests/benchmark_profile.py
+```
+
+第二个命令使用临时数据库和本地模拟接口，将被测服务及其脚本子进程限制到一个逻辑 CPU，打印进程树 RSS 与请求延迟，不执行真实签到。实测结果与边界见 [性能验证记录](docs/performance.md)。
+
 ## 技术栈
 
-- **后端**：Flask 3.0
+- **后端**：Flask 3.0 + Waitress（单进程、默认 4 个请求线程）
 - **定时任务**：APScheduler 3.10
 - **数据库**：SQLite + Peewee ORM
 - **HTTP 请求**：Requests（自定义 Curl 解析器）
@@ -47,7 +72,7 @@ docker run -d \
   -p 5000:5000 \
   -v $(pwd)/data:/app/data \
   -e ADMIN_PASSWORD=acgo123321 \
-  -e AUTO_CLEAN_LOGS=false \
+  -e AUTO_CLEAN_LOGS=true \
   -e MAX_LOGS_COUNT=500 \
   ghcr.io/your-username/acgo:latest
 
@@ -89,7 +114,7 @@ docker run -d \
   -p 5000:5000 \
   -v $(pwd)/data:/app/data \
   -e ADMIN_PASSWORD=acgo123321 \
-  -e AUTO_CLEAN_LOGS=false \
+  -e AUTO_CLEAN_LOGS=true \
   -e MAX_LOGS_COUNT=500 \
   acgo:latest
 
@@ -132,9 +157,9 @@ ADMIN_PASSWORD=your_secure_password
 # Flask 密钥（可选，已有安全默认值）
 SECRET_KEY=your-random-secret-key
 
-# 自动清理签到记录（可选，默认：false）
-# 设置为 true 启用自动清理，每天凌晨 3:00 执行
-AUTO_CLEAN_LOGS=false
+# 自动清理签到记录（可选，新数据库默认：true）
+# 设置为 true 启用自动清理，每 10 秒分批执行
+AUTO_CLEAN_LOGS=true
 
 # 最大签到记录数（可选，默认：500）
 # 当启用自动清理时，保留最新的 N 条记录
@@ -172,10 +197,39 @@ python run.py
 
 1. 点击"添加账号"按钮
 2. 填写账号名称
-3. 粘贴完整的 curl 命令（从浏览器开发者工具复制）
+3. 选择执行方式：Curl 命令、JavaScript 脚本或 Python 脚本，填写内容；可展开 Demo 或点击“填入示例”
 4. 配置 Cron 表达式（例如：`0 8 * * *` 表示每天 8 点）
 5. 设置重试次数和重试间隔
 6. 保存
+
+### 脚本任务
+
+添加和编辑账号均支持切换执行方式，已有账号默认仍为 Curl。三种方式共用 Cron、随机时间窗口、失败重试和通知配置；导入导出也会保留执行方式与脚本。
+
+| 方式 | 运行环境 | 成功条件 |
+|------|----------|----------|
+| Curl | 内置 HTTP 请求执行器 | HTTP 状态码为 2xx |
+| JavaScript | 服务端 Node.js；页面示例需要 Node.js 18+ | 进程退出码为 0 |
+| Python | 启动服务所用的 Python / 虚拟环境 | 进程退出码为 0 |
+
+Windows 本地使用 JavaScript 前需安装 Node.js，并确保 `node --version` 可用，然后重启服务。两个 Dockerfile 均已加入 Node.js，已有镜像需要重新构建。
+
+脚本在独立进程和临时工作目录中运行，单次最多 60 秒，输出超过 128 KiB 会判为失败；签到日志最多保存 5000 字符，并显示退出码、错误信息及当次脚本。超时或非零退出码会按重试配置再次运行。业务接口返回失败时，脚本需要主动抛出异常或设置非零退出码；仅打印“失败”不会将任务标为失败。
+
+脚本以服务账号权限执行，不是安全沙箱，仅运行可信代码。临时目录会在执行后清理；需要持久化文件时请使用明确的绝对路径。Python 可使用当前虚拟环境中的依赖，JavaScript 示例使用 Node.js 内置 API，不会自动安装第三方包。
+
+页面中的三种 Demo 请求 `https://httpbin.org/get`，用于演示 HTTP 调用，并非真实签到接口。实际使用时请替换地址、认证信息和业务成功判断。以下是不访问网络、可直接手动执行的脚本示例：
+
+```javascript
+// JavaScript：console.log 输出到签到日志；抛出 Error 表示失败。
+console.log(JSON.stringify({success: true, message: "JavaScript 脚本执行成功"}));
+```
+
+```python
+# Python：print 输出到签到日志；抛出异常表示失败。
+import json
+print(json.dumps({"success": True, "message": "Python 脚本执行成功"}, ensure_ascii=False))
+```
 
 ### Curl 命令示例
 
@@ -213,7 +267,7 @@ curl 'https://api.example.com/checkin' \
 - `R(20:00-22:00) 1 * *` - 每月 1 号 20:00-22:00 随机执行
 - `R(07:00-07:10) * * 0,6` - 每周六日 7:00-7:10 随机执行
 
-**工作原理**：系统会在窗口开始时间触发任务，然后随机延迟 0 到窗口长度的时间后执行签到。
+**工作原理**：系统在窗口开始时计算随机执行时间，将待执行项持久化到 SQLite；等待期间不占用任务线程。
 
 ## 项目结构
 
@@ -237,7 +291,8 @@ acgo/
 
 ### 账号管理
 
-- `GET /api/accounts` - 获取账号列表
+- `GET /api/accounts?page=1&page_size=20` - 分页账号摘要（不含 Curl/脚本正文）
+- `GET /api/accounts/<id>` - 单个账号完整配置
 - `POST /api/accounts` - 创建账号
 - `PUT /api/accounts/<id>` - 更新账号
 - `DELETE /api/accounts/<id>` - 删除账号
@@ -246,8 +301,10 @@ acgo/
 
 ### 签到操作
 
-- `POST /api/checkin/<id>` - 手动立即签到
-- `GET /api/logs` - 获取签到记录（支持分页）
+- `POST /api/checkin/<id>` - 提交手动签到，返回 HTTP 202 和执行 ID；队列满返回 429
+- `GET /api/executions/<id>` - 查询排队、运行、重试或最终结果
+- `GET /api/logs` - 获取签到记录摘要（分页大小 1～100）
+- `GET /api/logs/<id>/response` - 获取完整的已保存响应（最多 5000 字符）
 - `GET /api/stats` - 获取统计数据
 - `DELETE /api/logs/clear` - 清除签到记录
 
@@ -275,7 +332,7 @@ acgo/
 
 ### 2. 签到记录自动清理
 
-- **启用自动清理**：开启后，每天凌晨 3:00 自动执行清理
+- **启用自动清理**：开启后，每 10 秒分批清理
 - **最大记录数**：保留最新的 N 条签到记录（最小 100 条）
 - 超出限制的旧记录会被自动删除
 
@@ -292,7 +349,7 @@ acgo/
 3. **时区问题**：Cron 表达式使用服务器本地时区
 4. **日志清理**：建议启用自动清理功能，避免数据库过大
 5. **随机窗口**：使用随机时间窗口时，确保窗口不跨越午夜（暂不支持）
-6. **配置持久化**：所有配置保存在数据库中，备份 `data/acgo.db` 即可保留所有数据
+6. **配置持久化**：所有配置保存在数据库中，运行中请使用 SQLite backup API 备份；或先正常停止服务再备份整个 `data/` 目录。WAL 模式下不要在运行中只复制 `acgo.db`
 
 ## CI/CD 自动构建
 
@@ -364,7 +421,7 @@ A: 在添加或编辑账号时，Cron 表达式使用 `R(开始时间-结束时�
 
 ### Q: 如何启用自动清理？
 
-A: 点击右上角"系统设置"按钮，勾选"启用自动清理"，设置最大记录数后保存即可。系统会在每天凌晨 3:00 自动清理超出限制的旧记录。
+A: 点击右上角"系统设置"按钮，勾选"启用自动清理"，设置最大记录数后保存即可。系统会每 10 秒分批清理超出限制的旧记录。
 
 ### Q: 如何修改管理员密码？
 

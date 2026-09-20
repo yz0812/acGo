@@ -908,3 +908,13 @@ td[colspan] { padding: 36px 16px; color: var(--muted-foreground); }
     *, *::before, *::after { animation: none !important; transition: none !important; }
     html { scroll-behavior: auto; }
 }
+
+/* Task type editor */
+#accountModal .modal-content, #scriptPreviewModal .modal-content { max-width: 760px; }
+.task-kind { display: block; font-size: 11px; color: var(--muted-foreground); margin-top: 3px; }
+.task-demo { padding: 14px; margin-bottom: 20px; border: 1px solid var(--border); border-radius: 6px; background: var(--muted); }
+.task-demo-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; font-size: 14px; font-weight: 600; }
+.task-demo summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+.task-demo pre, .script-preview { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.7 var(--font-mono); }
+.task-demo pre { margin-top: 12px; }
+.task-demo small { display: block; margin-top: 10px; color: var(--muted-foreground); }

@@ -13,10 +13,11 @@ ENV PYTHONUNBUFFERED=1 \
 # 安装构建依赖（Alpine 需要）
 RUN apk add --no-cache --virtual .build-deps \
     gcc \
+    linux-headers \
     musl-dev \
     libffi-dev \
     && apk add --no-cache \
-    libffi
+    libffi nodejs
 
 # 复制依赖文件
 COPY requirements.txt .
@@ -36,7 +37,7 @@ EXPOSE 5000
 
 # 健康检查（简化版，不依赖 requests）
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:5000/login || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:5000/health || exit 1
 
 # 启动应用
 CMD ["python", "run.py"]

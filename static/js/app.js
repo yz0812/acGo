@@ -69,8 +69,6 @@ document.addEventListener('DOMContentLoaded', function() {
     loadStats();
     loadAccounts();
     loadLogsPage(1);
-    loadWebhookConfig();
-    loadNotifyChannels();
 });
 
 // 加载统计数据
@@ -91,13 +89,25 @@ async function loadStats() {
 }
 
 // 加载账号列表
-async function loadAccounts() {
+let accountsPage = 1;
+let accountsPages = 1;
+const executionMonitors = new Map();
+const executionLabels = {queued: '等待执行', running: '正在执行', retry_wait: '等待重试',
+    success: '执行成功', failed: '执行失败', cancelled: '已取消', interrupted: '执行中断，请核实结果'};
+
+async function loadAccounts(page = accountsPage) {
     try {
-        const res = await fetch('/api/accounts');
+        const res = await fetch(`/api/accounts?page=${page}&page_size=20`);
         const data = await res.json();
 
         if (data.success) {
             const tbody = document.getElementById('accountsBody');
+            accountsPage = data.page;
+            accountsPages = Math.max(1, Math.ceil(data.total / data.page_size));
+            if (accountsPage > accountsPages) return loadAccounts(accountsPages);
+            document.getElementById('accountsPageInfo').textContent = `第 ${accountsPage} 页 / 共 ${accountsPages} 页（${data.total} 个账号）`;
+            document.getElementById('accountsPrev').disabled = accountsPage <= 1;
+            document.getElementById('accountsNext').disabled = accountsPage >= accountsPages;
 
             if (data.data.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;">暂无账号</td></tr>';
@@ -107,8 +117,8 @@ async function loadAccounts() {
             tbody.innerHTML = data.data.map(acc => `
                 <tr>
                     <td>${acc.id}</td>
-                    <td>${acc.name}</td>
-                    <td>${acc.cron_expr}</td>
+                    <td>${escapeHtml(acc.name)}<span class="task-kind">${TASK_LABELS[acc.task_type] || 'Curl'}</span></td>
+                    <td>${escapeHtml(acc.cron_expr)}</td>
                     <td>${acc.retry_count}</td>
                     <td>${acc.retry_interval}</td>
                     <td>
@@ -119,12 +129,16 @@ async function loadAccounts() {
                     <td>${acc.created_at}</td>
                     <td>
                         <button onclick="showRequestPreview(${acc.id})" class="btn btn-sm btn-secondary">查看详情</button>
-                        <button onclick="manualCheckin(${acc.id})" class="btn btn-sm btn-success">立即签到</button>
+                        <button id="checkinBtn-${acc.id}" onclick="manualCheckin(${acc.id})" class="btn btn-sm btn-success" ${acc.execution ? 'disabled' : ''}>立即签到</button>
+                        <span id="executionStatus-${acc.id}" role="status">${acc.execution ? executionLabels[acc.execution.state] : ''}</span>
                         <button onclick="editAccount(${acc.id})" class="btn btn-sm btn-primary">编辑</button>
                         <button onclick="deleteAccount(${acc.id})" class="btn btn-sm btn-danger">删除</button>
                     </td>
                 </tr>
             `).join('');
+            for (const account of data.data) {
+                if (account.execution) watchExecution(account.id, account.execution.id);
+            }
         }
     } catch (error) {
         console.error('加载账号失败:', error);
@@ -153,16 +167,18 @@ async function loadLogsPage(page) {
             tbody.innerHTML = data.data.map(log => `
                 <tr>
                     <td>${log.id}</td>
-                    <td>${log.account_name}</td>
+                    <td>${escapeHtml(log.account_name)}</td>
                     <td>
                         <span class="badge ${log.status === 'success' ? 'badge-success' : 'badge-danger'}">
                             ${log.status === 'success' ? '成功' : '失败'}
                         </span>
                     </td>
-                    <td>${formatResponseCode(log.response_code)}</td>
+                    <td>${log.task_type && log.task_type !== 'curl'
+                        ? `<span class="badge ${log.status === 'success' ? 'badge-success' : 'badge-danger'}">退出码 ${log.exit_code ?? '-'}</span>`
+                        : formatResponseCode(log.response_code)}</td>
                     <td>
                         ${log.response_body ?
-                            `<span class="clickable" data-content="${escapeHtml(log.response_body)}" onclick="showResponseDetail(this)" title="点击查看完整内容">${escapeHtml(log.response_body.substring(0, 50))}...</span>`
+                            `<span class="clickable" onclick="showLogResponse(${log.id})" title="点击查看完整内容">${escapeHtml(log.response_body.substring(0, 50))}...</span>`
                             : '-'}
                     </td>
                     <td>
@@ -205,6 +221,7 @@ function loadLogs() {
 function showAddModal() {
     document.getElementById('modalTitle').textContent = '添加账号';
     document.getElementById('accountForm').reset();
+    resetTaskEditor();
     document.getElementById('accountId').value = '';
     document.getElementById('accountModal').style.display = 'block';
     document.body.style.overflow = 'hidden';  // 禁止背景滚动
@@ -213,17 +230,17 @@ function showAddModal() {
 // 编辑账号
 async function editAccount(id) {
     try {
-        const res = await fetch('/api/accounts');
+        const res = await fetch(`/api/accounts/${id}`);
         const data = await res.json();
 
         if (data.success) {
-            const account = data.data.find(acc => acc.id === id);
+            const account = data.data;
 
             if (account) {
                 document.getElementById('modalTitle').textContent = '编辑账号';
                 document.getElementById('accountId').value = account.id;
                 document.getElementById('accountName').value = account.name;
-                document.getElementById('curlCommand').value = account.curl_command;
+                resetTaskEditor(account.task_type || 'curl', account.curl_command, account.script_content || '');
                 document.getElementById('cronExpr').value = account.cron_expr;
                 document.getElementById('retryCount').value = account.retry_count;
                 document.getElementById('retryInterval').value = account.retry_interval;
@@ -250,7 +267,9 @@ document.getElementById('accountForm').addEventListener('submit', async function
     const id = document.getElementById('accountId').value;
     const formData = {
         name: document.getElementById('accountName').value,
+        task_type: document.getElementById('taskType').value,
         curl_command: document.getElementById('curlCommand').value,
+        script_content: document.getElementById('scriptContent').value,
         cron_expr: document.getElementById('cronExpr').value,
         retry_count: parseInt(document.getElementById('retryCount').value),
         retry_interval: parseInt(document.getElementById('retryInterval').value),
@@ -302,22 +321,78 @@ async function deleteAccount(id) {
     }
 }
 
-// 手动签到
+// 手动签到只提交任务，状态查询有退避和时长上限。
 async function manualCheckin(id) {
     if (!confirm('确定要立即执行签到吗？')) return;
-
+    const button = document.getElementById(`checkinBtn-${id}`);
+    if (button) button.disabled = true;
     try {
         const res = await fetch(`/api/checkin/${id}`, {method: 'POST'});
         const data = await res.json();
-
-        alert(data.message);
-
-        if (data.success) {
-            loadLogs();
-            loadStats();
-        }
+        if (!data.success) throw new Error(data.message);
+        watchExecution(id, data.data.id);
     } catch (error) {
-        alert('签到失败: ' + error.message);
+        if (button) button.disabled = false;
+        alert('提交失败: ' + error.message);
+    }
+}
+
+function watchExecution(accountId, executionId) {
+    if (executionMonitors.get(accountId)?.id === executionId) return;
+    const previous = executionMonitors.get(accountId);
+    if (previous) clearTimeout(previous.timer);
+    const monitor = {id: executionId, start: Date.now(), delay: 1000, timer: null};
+    executionMonitors.set(accountId, monitor);
+    const show = (text, busy) => {
+        const status = document.getElementById(`executionStatus-${accountId}`);
+        if (status) status.textContent = text;
+        const button = document.getElementById(`checkinBtn-${accountId}`);
+        if (button) button.disabled = busy;
+    };
+    show('已提交，等待执行', true);
+    const poll = async () => {
+        if (executionMonitors.get(accountId) !== monitor) return;
+        if (Date.now() - monitor.start > 300000) {
+            show('仍在后台执行，刷新账号可查看状态', true);
+            executionMonitors.delete(accountId);
+            return;
+        }
+        try {
+            if (!document.hidden) {
+                const res = await fetch(`/api/executions/${executionId}`);
+                const data = await res.json();
+                if (!data.success) throw new Error(data.message);
+                const execution = data.data;
+                const busy = ['queued', 'running', 'retry_wait'].includes(execution.state);
+                show(executionLabels[execution.state] || execution.state, busy);
+                if (!busy) {
+                    executionMonitors.delete(accountId);
+                    loadLogs();
+                    loadStats();
+                    return;
+                }
+            }
+        } catch (error) {
+            show('状态暂不可用，刷新账号可重试', false);
+            executionMonitors.delete(accountId);
+            return;
+        }
+        monitor.delay = Math.min(10000, monitor.delay * 1.5);
+        monitor.timer = setTimeout(poll, monitor.delay);
+    };
+    monitor.timer = setTimeout(poll, 500);
+}
+
+async function showLogResponse(id) {
+    try {
+        const res = await fetch(`/api/logs/${id}/response`);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message);
+        const holder = document.createElement('span');
+        holder.dataset.content = data.data.response_body || '';
+        showResponseDetail(holder);
+    } catch (error) {
+        alert('读取响应失败: ' + error.message);
     }
 }
 
@@ -536,22 +611,30 @@ async function importAccounts(event) {
             return;
         }
 
-        // 发送导入请求
-        const res = await fetch('/api/accounts/import', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({accounts: accounts})
-        });
-
-        const data = await res.json();
-
-        if (data.success) {
-            alert(`导入完成！\n\n成功: ${data.imported} 个\n失败: ${data.failed} 个\n重命名: ${data.renamed} 个`);
-            loadAccounts();
-            loadStats();
-        } else {
-            alert('导入失败: ' + data.message);
+        const totals = {imported: 0, failed: 0, renamed: 0};
+        const encoder = new TextEncoder();
+        let batch = [], bytes = 0;
+        const sendBatch = async () => {
+            const res = await fetch('/api/accounts/import', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({accounts: batch})
+            });
+            const data = await res.json();
+            if (!data.success) throw new Error(`${data.message}（此前已导入 ${totals.imported} 个）`);
+            for (const key of Object.keys(totals)) totals[key] += data[key] || 0;
+            batch = [];
+            bytes = 0;
+        };
+        for (const account of accounts) {
+            const length = encoder.encode(JSON.stringify(account)).length;
+            if (batch.length && (batch.length >= 100 || bytes + length > 1024 * 1024)) await sendBatch();
+            batch.push(account);
+            bytes += length;
         }
+        if (batch.length) await sendBatch();
+        alert(`导入完成！\n\n成功: ${totals.imported} 个\n失败: ${totals.failed} 个\n重命名: ${totals.renamed} 个`);
+        loadAccounts();
+        loadStats();
     } catch (error) {
         if (error instanceof SyntaxError) {
             alert('JSON 格式错误: ' + error.message);
@@ -673,6 +756,10 @@ async function showRequestPreview(accountId) {
 
         if (data.success) {
             const preview = data.data;
+            if (preview.task_type && preview.task_type !== 'curl') {
+                showScriptPreview(preview);
+                return;
+            }
 
             // 填充请求方式
             document.getElementById('previewMethod').textContent = preview.method;
@@ -741,6 +828,10 @@ async function showLogRequestPreview(logId) {
 
         if (data.success) {
             const preview = data.data;
+            if (preview.task_type && preview.task_type !== 'curl') {
+                showScriptPreview(preview);
+                return;
+            }
 
             // 填充请求方式
             document.getElementById('previewMethod').textContent = preview.method || '未记录';

@@ -1,5 +1,8 @@
 Flask==3.0.0
 APScheduler==3.10.4
 requests==2.31.0
+urllib3>=2.2,<3
 peewee==3.17.0
 python-dotenv==1.0.0
+waitress==3.0.2
+psutil==7.2.2

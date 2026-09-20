@@ -7,9 +7,13 @@ import hashlib
 import base64
 import urllib.parse
 from datetime import datetime
-import requests
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_from_directory
-from .models import Account, CheckinLog, Config, db, init_db
+from . import http_client as requests
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_from_directory, Response, stream_with_context
+from peewee import fn
+from .models import Account, CheckinLog, Config, Execution, Notification, ACTIVE_STATES, db, init_db, connection, save_configs
+from .execution import submit, cancel_pending, execution_data
+from .notifier import get_config as notification_config
+from .script_runner import validate_task
 from .auth import login_required, check_password
 from .scheduler import (
     start_scheduler,
@@ -18,7 +22,8 @@ from .scheduler import (
     remove_job,
     execute_checkin,
     parse_curl_command,
-    parse_random_cron
+    parse_random_cron,
+    cron_trigger
 )
 from .notifier import send_telegram, send_dingtalk, send_wecom, send_feishu, NOTIFY_CONFIG_KEYS
 
@@ -33,11 +38,37 @@ app = Flask(
 )
 app.secret_key = os.getenv('SECRET_KEY', 'a8f5f167f44f4964e6c998dee827110c5b92c0f8d1e3a7b2c4f6e8d0a2b4c6e8')
 
-# 初始化数据库
-init_db()
+app.config.update(MAX_CONTENT_LENGTH=2 * 1024 * 1024)
 
-# 启动调度器
-start_scheduler()
+
+def initialize_app():
+    """Explicit startup; importing this module never starts jobs or migrates data."""
+    init_db()
+
+
+@app.route('/health')
+def health():
+    return jsonify({'status': 'ok'})
+
+
+def pagination(default=50):
+    try:
+        page = int(request.args.get('page', 1))
+        size = int(request.args.get('page_size', default))
+    except (ValueError, TypeError):
+        raise ValueError('分页参数必须为整数')
+    if page < 1 or page > 100000 or not 1 <= size <= 100:
+        raise ValueError('page 必须为 1～100000，page_size 必须为 1～100')
+    return page, size
+
+
+def account_data(account, detail=False):
+    result = {name: getattr(account, name) for name in (
+        'id', 'name', 'task_type', 'cron_expr', 'retry_count', 'retry_interval', 'enabled')}
+    result['created_at'] = account.created_at.strftime('%Y-%m-%d %H:%M:%S')
+    if detail:
+        result.update(curl_command=account.curl_command, script_content=account.script_content)
+    return result
 
 
 @app.route('/favicon.ico')
@@ -86,25 +117,33 @@ def notify():
 @app.route('/api/accounts', methods=['GET'])
 @login_required
 def get_accounts():
-    """获取账号列表"""
-    db.connect(reuse_if_open=True)
-    
     try:
-        accounts = Account.select().order_by(Account.created_at.desc())
-        
-        data = [{
-            'id': acc.id,
-            'name': acc.name,
-            'curl_command': acc.curl_command,
-            'cron_expr': acc.cron_expr,
-            'retry_count': acc.retry_count,
-            'retry_interval': acc.retry_interval,
-            'enabled': acc.enabled,
-            'created_at': acc.created_at.strftime('%Y-%m-%d %H:%M:%S')
-        } for acc in accounts]
-        
-        return jsonify({'success': True, 'data': data})
-        
+        page, size = pagination(20)
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    db.connect(reuse_if_open=True)
+    try:
+        fields = [Account.id, Account.name, Account.task_type, Account.cron_expr, Account.retry_count,
+                  Account.retry_interval, Account.enabled, Account.created_at]
+        accounts = list(Account.select(*fields).order_by(Account.created_at.desc(), Account.id.desc()).paginate(page, size))
+        ids = [account.id for account in accounts]
+        active = {item.account_id: execution_data(item) for item in Execution.select().where(
+            Execution.account.in_(ids) & Execution.state.in_(ACTIVE_STATES))} if ids else {}
+        data = [dict(account_data(account), execution=active.get(account.id)) for account in accounts]
+        return jsonify(success=True, data=data, total=Account.select().count(), page=page, page_size=size)
+    finally:
+        db.close()
+
+
+@app.route('/api/accounts/<int:account_id>', methods=['GET'])
+@login_required
+def get_account(account_id):
+    db.connect(reuse_if_open=True)
+    try:
+        account = Account.get_by_id(account_id)
+        return jsonify(success=True, data=account_data(account, detail=True))
+    except Account.DoesNotExist:
+        return jsonify(success=False, message='账号不存在'), 404
     finally:
         db.close()
 
@@ -114,9 +153,11 @@ def get_accounts():
 def create_account():
     """创建账号"""
     data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({'success': False, 'message': '请求内容必须是 JSON 对象'}), 400
     
     # 验证必填字段
-    required_fields = ['name', 'curl_command', 'cron_expr']
+    required_fields = ['name', 'cron_expr']
     for field in required_fields:
         if not data.get(field):
             return jsonify({'success': False, 'message': f'缺少必填字段: {field}'}), 400
@@ -126,7 +167,9 @@ def create_account():
     try:
         # 验证 curl 命令
         try:
-            parse_curl_command(data['curl_command'])
+            task = validate_task(data)
+            if task['task_type'] == 'curl':
+                parse_curl_command(task['curl_command'])
         except ValueError as e:
             return jsonify({'success': False, 'message': str(e)}), 400
 
@@ -134,14 +177,14 @@ def create_account():
         if data.get('enabled', True):
             try:
                 # 使用 parse_random_cron 验证（支持随机语法）
-                parse_random_cron(data['cron_expr'])
+                cron_trigger(data['cron_expr'])
             except Exception as e:
                 return jsonify({'success': False, 'message': f'Cron 表达式错误: {e}'}), 400
 
         # 创建账号
         account = Account.create(
             name=data['name'],
-            curl_command=data['curl_command'],
+            **task,
             cron_expr=data['cron_expr'],
             retry_count=data.get('retry_count', 3),
             retry_interval=data.get('retry_interval', 60),
@@ -172,24 +215,31 @@ def create_account():
 def update_account(account_id):
     """更新账号"""
     data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({'success': False, 'message': '请求内容必须是 JSON 对象'}), 400
     
     db.connect(reuse_if_open=True)
     
     try:
         account = Account.get_by_id(account_id)
         
-        # 验证 curl 命令（如果有更新）
-        if 'curl_command' in data:
-            try:
-                parse_curl_command(data['curl_command'])
-            except ValueError as e:
-                return jsonify({'success': False, 'message': str(e)}), 400
-        
+        try:
+            task = validate_task(data, account)
+            if task['task_type'] == 'curl':
+                parse_curl_command(task['curl_command'])
+        except ValueError as e:
+            return jsonify({'success': False, 'message': str(e)}), 400
+
+        try:
+            cron_trigger(data.get('cron_expr', account.cron_expr))
+        except Exception as exc:
+            return jsonify(success=False, message=f'Cron 表达式错误: {exc}'), 400
+
         # 更新字段
         if 'name' in data:
             account.name = data['name']
-        if 'curl_command' in data:
-            account.curl_command = data['curl_command']
+        for field, value in task.items():
+            setattr(account, field, value)
         if 'cron_expr' in data:
             account.cron_expr = data['cron_expr']
         if 'retry_count' in data:
@@ -199,7 +249,10 @@ def update_account(account_id):
         if 'enabled' in data:
             account.enabled = data['enabled']
         
-        account.save()
+        with db.atomic('IMMEDIATE'):
+            account.version = Account.get_by_id(account_id).version + 1
+            account.save()
+            cancel_pending(account_id)
         
         # 更新定时任务
         if account.enabled:
@@ -230,6 +283,8 @@ def delete_account(account_id):
         # 移除定时任务
         remove_job(account_id)
 
+        cancel_pending(account_id)
+
         # 删除账号（级联删除日志）
         account.delete_instance()
 
@@ -249,6 +304,11 @@ def preview_account_request(account_id):
 
     try:
         account = Account.get_by_id(account_id)
+
+        if account.task_type != 'curl':
+            return jsonify({'success': True, 'data': {
+                'task_type': account.task_type, 'script_content': account.script_content
+            }})
 
         # 解析 curl 命令
         req_params = parse_curl_command(account.curl_command)
@@ -275,31 +335,27 @@ def preview_account_request(account_id):
 @app.route('/api/accounts/export', methods=['GET'])
 @login_required
 def export_accounts():
-    """导出所有账号"""
-    db.connect(reuse_if_open=True)
+    with connection():
+        highest = Account.select(fn.MAX(Account.id)).scalar() or 0
 
-    try:
-        accounts = Account.select()
+    def generate():
+        yield '{"success":true,"data":['
+        last_id, first = 0, True
+        while last_id < highest:
+            with connection():
+                accounts = list(Account.select().where((Account.id > last_id) & (Account.id <= highest)).order_by(Account.id).limit(20))
+            if not accounts:
+                break
+            for account in accounts:
+                data = account_data(account, detail=True)
+                data.pop('id')
+                data.pop('created_at')
+                yield ('' if first else ',') + json.dumps(data, ensure_ascii=False)
+                first = False
+                last_id = account.id
+        yield ']}'
 
-        # 转换为可导出的格式（排除 id 和 created_at）
-        export_data = []
-        for acc in accounts:
-            export_data.append({
-                'name': acc.name,
-                'curl_command': acc.curl_command,
-                'cron_expr': acc.cron_expr,
-                'retry_count': acc.retry_count,
-                'retry_interval': acc.retry_interval,
-                'enabled': acc.enabled
-            })
-
-        return jsonify({
-            'success': True,
-            'data': export_data
-        })
-
-    finally:
-        db.close()
+    return Response(stream_with_context(generate()), mimetype='application/json')
 
 
 @app.route('/api/accounts/import', methods=['POST'])
@@ -313,6 +369,8 @@ def import_accounts():
 
     accounts = data['accounts']
 
+    if isinstance(accounts, list) and len(accounts) > 100:
+        return jsonify(success=False, message='每次最多导入 100 个账号，请分批导入'), 400
     if not isinstance(accounts, list):
         return jsonify({'success': False, 'message': 'accounts 必须是数组'}), 400
 
@@ -330,16 +388,18 @@ def import_accounts():
         for idx, acc_data in enumerate(accounts):
             try:
                 # 验证必填字段
-                required_fields = ['name', 'curl_command']
+                required_fields = ['name']
                 for field in required_fields:
                     if field not in acc_data or not acc_data[field]:
                         raise ValueError(f'缺少必填字段: {field}')
 
                 # 验证 curl 命令
                 try:
-                    parse_curl_command(acc_data['curl_command'])
+                    task = validate_task(acc_data)
+                    if task['task_type'] == 'curl':
+                        parse_curl_command(task['curl_command'])
                 except ValueError as e:
-                    raise ValueError(f'curl 命令无效: {e}')
+                    raise ValueError(f'任务内容无效: {e}')
 
                 # 处理重名账号（自动重命名）
                 original_name = acc_data['name']
@@ -357,7 +417,7 @@ def import_accounts():
                 # 创建账号
                 account = Account.create(
                     name=account_name,
-                    curl_command=acc_data['curl_command'],
+                    **task,
                     cron_expr=acc_data.get('cron_expr', '0 8 * * *'),
                     retry_count=acc_data.get('retry_count', 3),
                     retry_interval=acc_data.get('retry_interval', 60),
@@ -405,23 +465,24 @@ def import_accounts():
 @app.route('/api/checkin/<int:account_id>', methods=['POST'])
 @login_required
 def manual_checkin(account_id):
-    """手动立即签到"""
+    result = submit(account_id, manual=True)
+    if result['status'] == 'missing':
+        return jsonify(success=False, message=result['error']), 404
+    if result['status'] == 'busy':
+        return jsonify(success=False, message=result['error']), 429, {'Retry-After': '5'}
+    return jsonify(success=True, message='该账号已有任务在执行或等待' if result['duplicate'] else '已加入执行队列',
+                   data=result['execution']), 202
+
+
+@app.route('/api/executions/<int:execution_id>', methods=['GET'])
+@login_required
+def get_execution(execution_id):
     db.connect(reuse_if_open=True)
-
     try:
-        account = Account.get_by_id(account_id)
-
-        # 执行签到（手动签到时跳过禁用状态检查）
-        result = execute_checkin(account_id, skip_enabled_check=True)
-
-        return jsonify({
-            'success': result['status'] == 'success',
-            'message': '签到成功' if result['status'] == 'success' else '签到失败',
-            'data': result
-        })
-
-    except Account.DoesNotExist:
-        return jsonify({'success': False, 'message': '账号不存在'}), 404
+        item = Execution.get_by_id(execution_id)
+        return jsonify(success=True, data=execution_data(item))
+    except Execution.DoesNotExist:
+        return jsonify(success=False, message='执行记录不存在或已清理'), 404
     finally:
         db.close()
 
@@ -430,18 +491,25 @@ def manual_checkin(account_id):
 @login_required
 def get_logs():
     """获取签到日志"""
-    page = int(request.args.get('page', 1))
-    page_size = int(request.args.get('page_size', 50))
-    status_filter = request.args.get('status', '')  # 状态筛选：'' (全部) / 'success' / 'failed'
+    try:
+        page, page_size = pagination()
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    status_filter = request.args.get('status', '')
+    if status_filter not in ('', 'success', 'failed'):
+        return jsonify(success=False, message='状态筛选无效'), 400
 
     db.connect(reuse_if_open=True)
 
     try:
         # 构建查询
         query = (CheckinLog
-                 .select(CheckinLog, Account)
+                 .select(CheckinLog.id, CheckinLog.account, CheckinLog.status, CheckinLog.response_code,
+                         CheckinLog.exit_code, CheckinLog.request_method, CheckinLog.error_message,
+                         fn.SUBSTR(CheckinLog.response_body, 1, 100).alias('response_preview'),
+                         CheckinLog.executed_at, Account.id, Account.name)
                  .join(Account)
-                 .order_by(CheckinLog.executed_at.desc()))
+                 .order_by(CheckinLog.executed_at.desc(), CheckinLog.id.desc()))
 
         # 应用状态筛选
         if status_filter:
@@ -461,7 +529,9 @@ def get_logs():
             'account_name': log.account.name,
             'status': log.status,
             'response_code': log.response_code,
-            'response_body': log.response_body,  # 返回完整内容
+            'exit_code': log.exit_code,
+            'task_type': log.request_method.lower() if log.request_method in ('PYTHON', 'JAVASCRIPT') else 'curl',
+            'response_body': log.response_preview,
             'error_message': log.error_message,
             'executed_at': log.executed_at.strftime('%Y-%m-%d %H:%M:%S')
         } for log in logs]
@@ -478,6 +548,19 @@ def get_logs():
         db.close()
 
 
+@app.route('/api/logs/<int:log_id>/response', methods=['GET'])
+@login_required
+def log_response(log_id):
+    db.connect(reuse_if_open=True)
+    try:
+        log = CheckinLog.select(CheckinLog.response_body).where(CheckinLog.id == log_id).get()
+        return jsonify(success=True, data={'response_body': log.response_body})
+    except CheckinLog.DoesNotExist:
+        return jsonify(success=False, message='日志不存在或已清理'), 404
+    finally:
+        db.close()
+
+
 @app.route('/api/logs/<int:log_id>/preview', methods=['GET'])
 @login_required
 def preview_log_request(log_id):
@@ -486,6 +569,11 @@ def preview_log_request(log_id):
 
     try:
         log = CheckinLog.get_by_id(log_id)
+
+        if log.request_method in ('PYTHON', 'JAVASCRIPT'):
+            return jsonify({'success': True, 'data': {
+                'task_type': log.request_method.lower(), 'script_content': log.request_data
+            }})
 
         # 解析 JSON 字符串
         headers = json.loads(log.request_headers) if log.request_headers else {}
@@ -517,10 +605,8 @@ def get_stats():
     db.connect(reuse_if_open=True)
 
     try:
-        total_accounts = Account.select().count()
-        enabled_accounts = Account.select().where(Account.enabled == True).count()
-        total_logs = CheckinLog.select().count()
-        success_logs = CheckinLog.select().where(CheckinLog.status == 'success').count()
+        total_accounts, enabled_accounts = Account.select(fn.COUNT(Account.id), fn.COALESCE(fn.SUM(Account.enabled), 0)).tuples().get()
+        total_logs, success_logs = CheckinLog.select(fn.COUNT(CheckinLog.id), fn.COALESCE(fn.SUM(CheckinLog.status == 'success'), 0)).tuples().get()
 
         return jsonify({
             'success': True,
@@ -578,12 +664,13 @@ def get_webhook_config():
     db.connect(reuse_if_open=True)
 
     try:
+        config_rows = {row.key: row for row in Config.select().where(Config.key.startswith('webhook_'))}
         # 获取配置
-        enabled_config = Config.get_or_none(Config.key == 'webhook_enabled')
-        include_response_config = Config.get_or_none(Config.key == 'webhook_include_response')
-        url_config = Config.get_or_none(Config.key == 'webhook_url')
-        method_config = Config.get_or_none(Config.key == 'webhook_method')
-        headers_config = Config.get_or_none(Config.key == 'webhook_headers')
+        enabled_config = config_rows.get('webhook_enabled')
+        include_response_config = config_rows.get('webhook_include_response')
+        url_config = config_rows.get('webhook_url')
+        method_config = config_rows.get('webhook_method')
+        headers_config = config_rows.get('webhook_headers')
 
         return jsonify({
             'success': True,
@@ -618,20 +705,7 @@ def save_webhook_config():
             'webhook_headers': data.get('headers', '')
         }
 
-        # 保存或创建配置
-        for key, value in webhook_configs.items():
-            config = Config.get_or_none(Config.key == key)
-            if config:
-                Config.update(
-                    value=value,
-                    updated_at=datetime.now()
-                ).where(Config.key == key).execute()
-            else:
-                Config.create(
-                    key=key,
-                    value=value,
-                    updated_at=datetime.now()
-                )
+        save_configs(webhook_configs)
 
         return jsonify({
             'success': True,
@@ -652,12 +726,13 @@ def test_webhook():
     db.connect(reuse_if_open=True)
 
     try:
+        config_rows = {row.key: row for row in Config.select().where(Config.key.startswith('webhook_'))}
         # 获取 Webhook 配置
-        enabled_config = Config.get_or_none(Config.key == 'webhook_enabled')
-        url_config = Config.get_or_none(Config.key == 'webhook_url')
-        method_config = Config.get_or_none(Config.key == 'webhook_method')
-        headers_config = Config.get_or_none(Config.key == 'webhook_headers')
-        include_response_config = Config.get_or_none(Config.key == 'webhook_include_response')
+        enabled_config = config_rows.get('webhook_enabled')
+        url_config = config_rows.get('webhook_url')
+        method_config = config_rows.get('webhook_method')
+        headers_config = config_rows.get('webhook_headers')
+        include_response_config = config_rows.get('webhook_include_response')
 
         # 验证配置
         if not url_config or not url_config.value:
@@ -694,7 +769,8 @@ def test_webhook():
             payload['response_body'] = '{"test": true, "message": "Webhook 测试成功"}'
 
         # 发送请求
-        import requests
+        db.close()
+        from . import http_client as requests
 
         if method.upper() == 'POST':
             # 检测 Content-Type，决定发送格式
@@ -801,11 +877,12 @@ def get_system_config():
 
 def get_webhook_config_dict():
     """获取 Webhook 配置字典（内部使用）"""
-    enabled_config = Config.get_or_none(Config.key == 'webhook_enabled')
-    url_config = Config.get_or_none(Config.key == 'webhook_url')
-    method_config = Config.get_or_none(Config.key == 'webhook_method')
-    headers_config = Config.get_or_none(Config.key == 'webhook_headers')
-    include_response_config = Config.get_or_none(Config.key == 'webhook_include_response')
+    config_rows = {row.key: row for row in Config.select().where(Config.key.startswith('webhook_'))}
+    enabled_config = config_rows.get('webhook_enabled')
+    url_config = config_rows.get('webhook_url')
+    method_config = config_rows.get('webhook_method')
+    headers_config = config_rows.get('webhook_headers')
+    include_response_config = config_rows.get('webhook_include_response')
     
     return {
         'enabled': enabled_config and enabled_config.value == 'true',
@@ -819,39 +896,18 @@ def get_webhook_config_dict():
 @app.route('/api/system/config', methods=['POST'])
 @login_required
 def save_system_config():
-    """保存系统配置"""
     data = request.get_json()
-
-    db.connect(reuse_if_open=True)
-
-    try:
-        from datetime import datetime
-
-        # 保存自动清理配置
-        if 'auto_clean_logs' in data:
-            Config.update(
-                value='true' if data['auto_clean_logs'] else 'false',
-                updated_at=datetime.now()
-            ).where(Config.key == 'auto_clean_logs').execute()
-
-        # 保存最大记录数配置
-        if 'max_logs_count' in data:
-            max_logs = int(data['max_logs_count'])
-            if max_logs < 100:
-                return jsonify({'success': False, 'message': '最大记录数不能小于 100'}), 400
-            
-            Config.update(
-                value=str(max_logs),
-                updated_at=datetime.now()
-            ).where(Config.key == 'max_logs_count').execute()
-
-        return jsonify({
-            'success': True,
-            'message': '系统配置保存成功'
-        })
-
-    finally:
-        db.close()
+    if not isinstance(data, dict):
+        return jsonify(success=False, message='请求内容必须是 JSON 对象'), 400
+    values = {}
+    if 'auto_clean_logs' in data:
+        values['auto_clean_logs'] = 'true' if data['auto_clean_logs'] else 'false'
+    if 'max_logs_count' in data:
+        if type(data['max_logs_count']) is not int or not 100 <= data['max_logs_count'] <= 100000:
+            return jsonify(success=False, message='日志保留条数必须是 100～100000 的整数'), 400
+        values['max_logs_count'] = str(data['max_logs_count'])
+    save_configs(values)
+    return jsonify(success=True, message='系统配置保存成功')
 
 
 @app.route('/api/system/password', methods=['POST'])
@@ -904,8 +960,9 @@ def get_notify_config():
 
     try:
         result = {}
+        values = notification_config()
         for key in NOTIFY_CONFIG_KEYS:
-            config = Config.get_or_none(Config.key == key)
+            config = Config(key=key, value=values[key]) if key in values else None
             if config:
                 # 布尔值转换
                 if key.endswith('_enabled'):
@@ -933,32 +990,13 @@ def save_notify_config():
     db.connect(reuse_if_open=True)
 
     try:
-        saved_count = 0
+        values = {}
         for key in NOTIFY_CONFIG_KEYS:
             if key in data:
                 value = data[key]
-                # 布尔值转字符串
-                if isinstance(value, bool):
-                    value = 'true' if value else 'false'
-                else:
-                    value = str(value) if value is not None else ''
-
-                # 检查配置是否存在
-                config = Config.get_or_none(Config.key == key)
-                if config:
-                    # 更新现有配置
-                    Config.update(
-                        value=value,
-                        updated_at=datetime.now()
-                    ).where(Config.key == key).execute()
-                else:
-                    # 创建新配置
-                    Config.create(
-                        key=key,
-                        value=value,
-                        updated_at=datetime.now()
-                    )
-                saved_count += 1
+                values[key] = ('true' if value else 'false') if isinstance(value, bool) else str(value or '')
+        save_configs(values)
+        saved_count = len(values)
 
         return jsonify({'success': True, 'message': f'通知渠道配置保存成功，共 {saved_count} 项'})
 
@@ -972,9 +1010,10 @@ def save_notify_config():
 def _get_notify_config(prefix: str) -> dict:
     """获取指定前缀的通知配置（内部函数）"""
     result = {}
+    values = notification_config()
     for key in NOTIFY_CONFIG_KEYS:
         if key.startswith(prefix):
-            config = Config.get_or_none(Config.key == key)
+            config = Config(key=key, value=values[key]) if key in values else None
             short_key = key[len(prefix) + 1:]  # 移除前缀和下划线
             if config:
                 result[short_key] = config.value == 'true' if key.endswith('_enabled') else config.value
@@ -991,6 +1030,7 @@ def test_telegram():
 
     try:
         cfg = _get_notify_config('telegram')
+        db.close()
 
         if not cfg.get('bot_token') or not cfg.get('user_id'):
             return jsonify({'success': False, 'message': '请先配置 Bot Token 和 User ID'}), 400
@@ -1024,6 +1064,7 @@ def test_wecom():
 
     try:
         cfg = _get_notify_config('wecom')
+        db.close()
 
         if not cfg.get('webhook_key'):
             return jsonify({'success': False, 'message': '请先配置 Webhook Key'}), 400
@@ -1056,6 +1097,7 @@ def test_dingtalk():
 
     try:
         cfg = _get_notify_config('dingtalk')
+        db.close()
 
         if not cfg.get('access_token'):
             return jsonify({'success': False, 'message': '请先配置 Access Token'}), 400
@@ -1089,6 +1131,7 @@ def test_feishu():
 
     try:
         cfg = _get_notify_config('feishu')
+        db.close()
 
         if not cfg.get('webhook_url'):
             return jsonify({'success': False, 'message': '请先配置 Webhook 地址'}), 400
@@ -1121,7 +1164,4 @@ def close_db(error):
 
 
 if __name__ == '__main__':
-    try:
-        app.run(host='0.0.0.0', port=5000, debug=False)
-    finally:
-        stop_scheduler()
+    raise SystemExit('请从项目根目录运行 python run.py')

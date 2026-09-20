@@ -1,24 +1,27 @@
 """定时任务调度模块"""
-import time
 import logging
 import re
 import json
 import random
 import shlex
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple
-import requests
+from . import http_client as requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from .models import Account, CheckinLog, Config, db
-from .notifier import send_all_notifications
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
+from .models import Account, CheckinLog, Config, Execution, Notification, ACTIVE_STATES, db, connection
+from .script_runner import run_script
+from .execution import submit, engine
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 全局调度器实例
-scheduler = BackgroundScheduler()
+scheduler = BackgroundScheduler(executors={'default': {'type': 'threadpool', 'max_workers': 2}},
+                                job_defaults={'misfire_grace_time': 300, 'coalesce': True, 'max_instances': 1})
 
 
 def parse_curl_command(curl_cmd: str) -> Dict[str, Any]:
@@ -209,365 +212,135 @@ def parse_random_cron(cron_expr: str) -> Tuple[str, Optional[int]]:
     return standard_cron, max_delay_seconds
 
 
-def execute_checkin_with_random_delay(account_id: int, max_delay_seconds: Optional[int] = None):
-    """
-    带随机延迟的签到执行包装函数
-    
-    Args:
-        account_id: 账号ID
-        max_delay_seconds: 最大随机延迟秒数，None 表示立即执行
-    """
-    if max_delay_seconds:
-        # 随机延迟 0 到 max_delay_seconds 秒
-        delay = random.randint(0, max_delay_seconds)
-        logger.info(f'账号 {account_id} 将在 {delay} 秒后执行签到（随机延迟）')
-        time.sleep(delay)
-    
-    # 执行签到
-    execute_checkin(account_id)
+def execute_checkin_with_random_delay(account_id: int, max_delay_seconds=None):
+    return submit(account_id, delay=random.randint(0, max_delay_seconds or 0))
 
 
-def execute_checkin(account_id: int, retry_attempt: int = 0, skip_enabled_check: bool = False) -> Dict[str, Any]:
-    """
-    执行签到任务
+def execute_checkin(account_id: int, retry_attempt=0, skip_enabled_check=False):
+    """All entry points submit to the same bounded queue."""
+    return submit(account_id, manual=skip_enabled_check)
 
-    Args:
-        account_id: 账号ID
-        retry_attempt: 当前重试次数
-        skip_enabled_check: 是否跳过禁用状态检查（手动签到时为 True）
 
-    Returns:
-        执行结果字典
-    """
-    db.connect(reuse_if_open=True)
-
-    # 初始化变量，避免异常时未定义
-    account = None
-    req_params = {}
-
+def execute_attempt(account):
+    """One attempt only; the durable execution queue handles retries."""
+    fields = dict(account=account.id)
+    result = {'status': 'failed'}
     try:
-        account = Account.get_by_id(account_id)
-    except Exception as e:
-        logger.error(f'获取账号失败: account_id={account_id}, error={e}')
-        db.close()
-        return {'status': 'failed', 'error': f'账号不存在: {account_id}'}
+        if account.task_type in ('python', 'javascript'):
+            fields.update(request_method=account.task_type.upper(), request_data=account.script_content)
+            outcome = run_script(account.task_type, account.script_content)
+            fields.update(exit_code=outcome['exit_code'], response_body=outcome['output'], error_message=outcome['error'])
+            result.update(status='success' if outcome['success'] else 'failed', exit_code=outcome['exit_code'],
+                          error=outcome['error'], response_body=outcome['output'])
+        elif account.task_type == 'curl':
+            params = parse_curl_command(account.curl_command)
+            fields.update(request_method=params['method'], request_url=params['url'], request_data=params['data'],
+                          request_headers=json.dumps(params['headers'], ensure_ascii=False),
+                          request_cookies=json.dumps(params['cookies'], ensure_ascii=False))
+            response = requests.request(**params)
+            success = 200 <= response.status_code < 300
+            error = None if success else f'HTTP {response.status_code}'
+            fields.update(response_code=response.status_code, response_body=response.text, error_message=error)
+            result.update(status='success' if success else 'failed', code=response.status_code, error=error,
+                          response_body=response.text, truncated=response.truncated)
+        else:
+            raise ValueError('不支持的执行方式')
+    except Exception as exc:
+        fields['error_message'] = str(exc)[:500]
+        result['error'] = str(exc)[:500]
+    fields['status'] = result['status']
+    with connection():
+        current = Account.get_or_none(Account.id == account.id)
+        if current is None:
+            return {'status': 'cancelled', 'error': '账号已删除'}
+        if current.version != account.version:
+            return {'status': 'cancelled', 'error': '执行期间账号已变更，结果未写入当前账号'}
+        log = CheckinLog.create(**fields)
+        result['log_id'] = log.id
+    return result
 
-    try:
-        if not skip_enabled_check and not account.enabled:
-           # logger.info(f'账号 {account.name} 已禁用，跳过签到')
-            return {'status': 'skipped', 'message': '账号已禁用'}
 
-        # 解析 curl 命令
-        req_params = parse_curl_command(account.curl_command)
-
-        # 使用循环重试，避免递归导致栈溢出和线程阻塞
-        for attempt in range(account.retry_count + 1):
-            try:
-                # 执行请求
-                # logger.info(f'开始执行签到: {account.name} (尝试 {attempt + 1}/{account.retry_count + 1})')
-
-                response = requests.request(
-                    method=req_params['method'],
-                    url=req_params['url'],
-                    headers=req_params['headers'],
-                    data=req_params['data'],
-                    cookies=req_params['cookies'],
-                    timeout=30
-                )
-
-                # 判断是否成功（2xx 状态码）
-                is_success = 200 <= response.status_code < 300
-
-                headers = req_params.get('headers', {})
-                cookies = req_params.get('cookies', {})
-
-                # 记录日志（保存请求参数，敏感信息已脱敏）
-                log = CheckinLog.create(
-                    account=account,
-                    status='success' if is_success else 'failed',
-                    response_code=response.status_code,
-                    response_body=response.text[:5000],  # 限制长度（增加到5000字符）
-                    error_message=None if is_success else f'HTTP {response.status_code}',
-                    executed_at=datetime.now(),
-                    # 保存请求参数（敏感信息已脱敏）
-                    request_method=req_params['method'],
-                    request_url=req_params['url'],
-                    request_headers=json.dumps(headers, ensure_ascii=False) if headers else None,
-                    request_cookies=json.dumps(cookies, ensure_ascii=False) if cookies else None,
-                    request_data=req_params['data']
-                )
-
-                if is_success:
-                    # logger.info(f'签到成功: {account.name} - HTTP {response.status_code}')
-
-                    # 调用 Webhook
-                    send_all_notifications(
-                        account_name=account.name,
-                        status='success',
-                        response_code=response.status_code,
-                        message='签到成功',
-                        response_body=response.text[:5000]  # 传递响应内容
-                    )
-
-                    return {
-                        'status': 'success',
-                        'code': response.status_code,
-                        'log_id': log.id
-                    }
-                else:
-                    # 失败且未达到重试上限，继续重试
-                    if attempt < account.retry_count:
-                        logger.warning(f'签到失败，{account.retry_interval}秒后重试: {account.name}')
-                        time.sleep(account.retry_interval)
-                        continue  # 继续下一次重试
-                    else:
-                        logger.error(f'签到失败（已达重试上限）: {account.name}')
-
-                        # 调用 Webhook
-                        send_all_notifications(
-                            account_name=account.name,
-                            status='failed',
-                            response_code=response.status_code,
-                            message=f'签到失败: HTTP {response.status_code}',
-                            response_body=response.text[:5000]  # 传递响应内容
-                        )
-
-                        return {
-                            'status': 'failed',
-                            'code': response.status_code,
-                            'log_id': log.id
-                        }
-
-            except requests.RequestException as e:
-                # 网络错误
-                error_msg = str(e)
-                logger.error(f'请求异常: {account.name} - {error_msg}')
-
-                headers = req_params.get('headers', {})
-                cookies = req_params.get('cookies', {})
-
-                CheckinLog.create(
-                    account=account,
-                    status='failed',
-                    response_code=None,
-                    response_body=None,
-                    error_message=error_msg[:500],
-                    executed_at=datetime.now(),
-                    # 保存请求参数（敏感信息已脱敏）
-                    request_method=req_params.get('method'),
-                    request_url=req_params.get('url'),
-                    request_headers=json.dumps(headers, ensure_ascii=False) if headers else None,
-                    request_cookies=json.dumps(cookies, ensure_ascii=False) if cookies else None,
-                    request_data=req_params.get('data')
-                )
-
-                # 重试逻辑
-                if attempt < account.retry_count:
-                    logger.warning(f'网络异常，{account.retry_interval}秒后重试: {account.name}')
-                    time.sleep(account.retry_interval)
-                    continue  # 继续下一次重试
-
-                # 最后一次失败，调用 Webhook
-                send_all_notifications(
-                    account_name=account.name,
-                    status='failed',
-                    response_code=None,
-                    message=f'网络异常: {error_msg}'
-                )
-
-                return {'status': 'failed', 'error': error_msg}
-
-    except Exception as e:
-        logger.error(f'未知错误: {account.name} - {e}')
-
-        headers = req_params.get('headers', {})
-        cookies = req_params.get('cookies', {})
-
-        CheckinLog.create(
-            account=account,
-            status='failed',
-            response_code=None,
-            response_body=None,
-            error_message=str(e)[:500],
-            executed_at=datetime.now(),
-            # 保存请求参数（敏感信息已脱敏）
-            request_method=req_params.get('method'),
-            request_url=req_params.get('url'),
-            request_headers=json.dumps(headers, ensure_ascii=False) if headers else None,
-            request_cookies=json.dumps(cookies, ensure_ascii=False) if cookies else None,
-            request_data=req_params.get('data')
-        )
-
-        # 调用 Webhook
-        send_all_notifications(
-            account_name=account.name,
-            status='failed',
-            response_code=None,
-            message=f'未知错误: {str(e)}'
-        )
-
-        return {'status': 'failed', 'error': str(e)}
-        
-    finally:
-        db.close()
+def cron_trigger(cron_expr):
+    standard, delay = parse_random_cron(cron_expr)
+    return CronTrigger.from_crontab(standard), delay
 
 
 def add_job(account_id: int, cron_expr: str):
-    """
-    添加定时任务
-    
-    支持标准 Cron 和随机时间窗口语法：
-    - 标准: "0 8 * * *" → 每天 8:00 执行
-    - 随机: "R(09:00-09:30) * * *" → 每天 9:00-9:30 随机执行
-    
-    Args:
-        account_id: 账号ID
-        cron_expr: Cron 表达式
-    """
-    job_id = f'account_{account_id}'
-    
-    # 移除旧任务（如果存在）
-    if scheduler.get_job(job_id):
-        scheduler.remove_job(job_id)
-    
-    # 解析 Cron 表达式（支持随机时间窗口）
-    standard_cron, max_delay_seconds = parse_random_cron(cron_expr)
-    
-    # 解析标准 Cron 表达式
-    parts = standard_cron.split()
-    if len(parts) != 5:
-        raise ValueError('Cron 表达式格式错误，应为 5 个字段（分 时 日 月 周）')
-    
-    minute, hour, day, month, day_of_week = parts
-    
-    # 根据是否有随机延迟选择执行函数
-    if max_delay_seconds:
-        # 随机模式：使用带延迟的包装函数
-        func = execute_checkin_with_random_delay
-        args = [account_id, max_delay_seconds]
-        logger.info(f'已添加随机定时任务: account_id={account_id}, cron={cron_expr}, 随机窗口={max_delay_seconds}秒')
-    else:
-        # 标准模式：直接执行
-        func = execute_checkin
-        args = [account_id]
-        # logger.info(f'已添加定时任务: account_id={account_id}, cron={cron_expr}')
-    
-    # 添加新任务
-    scheduler.add_job(
-        func=func,
-        trigger=CronTrigger(
-            minute=minute,
-            hour=hour,
-            day=day,
-            month=month,
-            day_of_week=day_of_week
-        ),
-        args=args,
-        id=job_id,
-        replace_existing=True
-    )
+    trigger, delay = cron_trigger(cron_expr)
+    scheduler.add_job(execute_checkin_with_random_delay, trigger=trigger,
+                      args=[account_id, delay], id=f'account_{account_id}', replace_existing=True)
 
 
 def remove_job(account_id: int):
-    """移除定时任务"""
     job_id = f'account_{account_id}'
     if scheduler.get_job(job_id):
         scheduler.remove_job(job_id)
-       # logger.info(f'已移除定时任务: account_id={account_id}')
 
 
 def reload_all_jobs():
-    """重新加载所有启用的账号任务"""
-    db.connect(reuse_if_open=True)
-    
-    try:
-        # 清空所有任务
-        scheduler.remove_all_jobs()
-        
-        # 加载启用的账号
-        accounts = Account.select().where(Account.enabled == True)
-        
-        for account in accounts:
+    with connection():
+        for account in Account.select(Account.id, Account.cron_expr).where(Account.enabled == True).iterator():
             try:
                 add_job(account.id, account.cron_expr)
-            except Exception as e:
-                logger.error(f'加载任务失败: {account.name} - {e}')
-        
-      #  logger.info(f'已重新加载 {len(accounts)} 个定时任务')
-        
-    finally:
-        db.close()
+            except Exception:
+                logger.exception('Invalid schedule for account %s', account.id)
 
 
 def start_scheduler():
-    """启动调度器"""
-    if not scheduler.running:
-        scheduler.start()
-        reload_all_jobs()
-        
-        # 添加自动清理任务（每天凌晨 3:00 执行）
-        scheduler.add_job(
-            func=auto_clean_logs,
-            trigger=CronTrigger(hour=3, minute=0),
-            id='auto_clean_logs',
-            replace_existing=True
-        )
-        logger.info('调度器已启动，自动清理任务已添加')
+    if scheduler.running:
+        return
+    reload_all_jobs()
+    scheduler.add_job(auto_clean_logs, 'interval', seconds=10, id='auto_clean_logs', replace_existing=True)
+    engine.start()
+    scheduler.start()
 
 
 def auto_clean_logs():
-    """自动清理超出限制的签到记录"""
-    db.connect(reuse_if_open=True)
-
-    try:
-        # 检查是否启用自动清理
-        auto_clean_config = Config.get_or_none(Config.key == 'auto_clean_logs')
-        if not auto_clean_config or auto_clean_config.value != 'true':
-            logger.info('自动清理未启用，跳过')
-            return
-
-        # 获取最大记录数，添加类型验证
-        max_logs_config = Config.get_or_none(Config.key == 'max_logs_count')
-        try:
-            max_logs = int(max_logs_config.value) if max_logs_config else 500
-        except (ValueError, AttributeError):
-            max_logs = 500
-            logger.warning('无效的 max_logs_count 配置，使用默认值 500')
-
-        # 获取当前记录总数
-        total_logs = CheckinLog.select().count()
-
-        if total_logs <= max_logs:
-            logger.info(f'当前记录数 {total_logs} 未超过限制 {max_logs}，无需清理')
-            return
-
-        # 计算需要删除的记录数
-        to_delete = total_logs - max_logs
-
-        # 使用事务保护，避免并发问题
-        with db.atomic():
-            # 使用子查询直接删除，避免内存问题和参数限制
-            subquery = (CheckinLog
-                        .select(CheckinLog.id)
-                        .order_by(CheckinLog.executed_at.asc())
-                        .limit(to_delete))
-
-            deleted = (CheckinLog
-                       .delete()
-                       .where(CheckinLog.id.in_(subquery))
-                       .execute())
-
-        logger.info(f'自动清理完成：删除了 {deleted} 条旧记录，保留最新 {max_logs} 条')
-
-    except Exception as e:
-        logger.error(f'自动清理失败: {e}')
-
-    finally:
-        db.close()
+    """Short 200-row deletes, with a one-second work budget per cleanup tick."""
+    with connection():
+        config = dict(Config.select(Config.key, Config.value).where(
+            Config.key.in_(('auto_clean_logs', 'max_logs_count'))).tuples())
+        if config.get('auto_clean_logs', 'true') == 'true':
+            try:
+                keep = max(100, int(config.get('max_logs_count', '500')))
+            except ValueError:
+                keep = 500
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                cutoff = (CheckinLog.select(CheckinLog.id).order_by(CheckinLog.executed_at.desc(), CheckinLog.id.desc())
+                          .offset(keep).limit(200))
+                if CheckinLog.delete().where(CheckinLog.id.in_(cutoff)).execute() < 200:
+                    break
+        # Queue history is bounded independently of the user log-retention switch.
+        cutoff = datetime.now() - timedelta(days=1)
+        for model, predicate in ((Execution, (~Execution.state.in_(ACTIVE_STATES)) & (Execution.updated_at < cutoff)),
+                                 (Notification, (Notification.state.in_(('sent', 'failed', 'cancelled'))) & (Notification.due_at < cutoff))):
+            old = model.select(model.id).where(predicate).order_by(model.id.desc()).offset(100).limit(200)
+            model.delete().where(model.id.in_(old)).execute()
+        # Keep recent terminal records bounded even during a high-volume day.
+        for model, predicate in ((Execution, ~Execution.state.in_(ACTIVE_STATES)),
+                                 (Notification, Notification.state.in_(('sent', 'failed', 'cancelled')))):
+            old = model.select(model.id).where(predicate).order_by(model.id.desc()).offset(1000).limit(200)
+            model.delete().where(model.id.in_(old)).execute()
 
 
 def stop_scheduler():
-    """停止调度器"""
     if scheduler.running:
-        scheduler.shutdown()
-      #  logger.info('调度器已停止')
+        scheduler.shutdown(wait=True)
+    engine.stop()
+
+
+def _schedule_error(event):
+    if not event.job_id.startswith('account_'):
+        return
+    account_id = int(event.job_id.removeprefix('account_'))
+    try:
+        with connection():
+            if Account.get_or_none(Account.id == account_id):
+                CheckinLog.create(account=account_id, status='failed',
+                                  error_message='定时触发失败或超过 5 分钟宽限，本次未执行，请检查服务负载')
+    except Exception:
+        logger.exception('Unable to record missed trigger for %s', account_id)
+
+
+scheduler.add_listener(_schedule_error, EVENT_JOB_ERROR | EVENT_JOB_MISSED)

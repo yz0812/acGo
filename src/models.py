@@ -1,6 +1,8 @@
 """数据库模型定义"""
 import os
+import secrets
 from datetime import datetime
+from contextlib import contextmanager
 from peewee import (
     SqliteDatabase,
     Model,
@@ -11,14 +13,33 @@ from peewee import (
     BooleanField,
     DateTimeField,
     ForeignKeyField,
+    SQL,
 )
 
 # 确保数据目录存在（指向项目根目录的 data/）
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
+from . import settings  # Load .env before resolving paths.
+
+DATA_DIR = os.getenv('DATA_DIR', os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data'))
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # 数据库实例
-db = SqliteDatabase(os.path.join(DATA_DIR, 'acgo.db'))
+db = SqliteDatabase(os.path.join(DATA_DIR, 'acgo.db'), timeout=5, pragmas={
+    'journal_mode': 'wal', 'foreign_keys': 1, 'busy_timeout': 5000,
+    'cache_size': -2048, 'synchronous': 'full', 'wal_autocheckpoint': 1000,
+})
+
+
+@contextmanager
+def connection():
+    """Close only connections opened here, including nested API calls."""
+    opened = db.is_closed()
+    if opened:
+        db.connect()
+    try:
+        yield
+    finally:
+        if opened:
+            db.close()
 
 
 class BaseModel(Model):
@@ -31,7 +52,12 @@ class Account(BaseModel):
     """账号表"""
     id = AutoField(primary_key=True)
     name = CharField(max_length=100, verbose_name='账号名称')
-    curl_command = TextField(verbose_name='Curl命令')
+    curl_command = TextField(default='', verbose_name='Curl命令')
+    task_type = CharField(max_length=10, default='curl')
+    script_content = TextField(default='')
+    # A fresh generation also distinguishes a newly-created account if SQLite
+    # reuses a deleted legacy account's numeric primary key.
+    version = IntegerField(default=lambda: secrets.randbits(62))
     cron_expr = CharField(max_length=50, default='0 8 * * *', verbose_name='Cron表达式')
     retry_count = IntegerField(default=3, verbose_name='重试次数')
     retry_interval = IntegerField(default=60, verbose_name='重试间隔(秒)')
@@ -48,6 +74,7 @@ class CheckinLog(BaseModel):
     account = ForeignKeyField(Account, backref='logs', on_delete='CASCADE')
     status = CharField(max_length=20, verbose_name='状态')  # success, failed
     response_code = IntegerField(null=True, verbose_name='响应状态码')
+    exit_code = IntegerField(null=True)
     response_body = TextField(null=True, verbose_name='响应内容')
     error_message = TextField(null=True, verbose_name='错误信息')
     executed_at = DateTimeField(default=datetime.now, verbose_name='执行时间')
@@ -73,6 +100,49 @@ class Config(BaseModel):
         table_name = 'configs'
 
 
+ACTIVE_STATES = ('queued', 'running', 'retry_wait')
+
+
+class Execution(BaseModel):
+    """Bounded durable work queue. No copies of script/request bodies."""
+    id = AutoField(constraints=[SQL('AUTOINCREMENT')])
+    account = ForeignKeyField(Account, on_delete='CASCADE')
+    account_version = IntegerField()
+    kind = CharField()  # curl / script: separate worker budgets
+    manual = BooleanField(default=False)
+    state = CharField(default='queued')
+    attempt = IntegerField(default=0)
+    due_at = DateTimeField(default=datetime.now)
+    created_at = DateTimeField(default=datetime.now)
+    updated_at = DateTimeField(default=datetime.now)
+    result = TextField(default='{}')
+
+    class Meta:
+        indexes = ((('kind', 'state', 'due_at', 'id'), False),)
+
+
+class Notification(BaseModel):
+    id = AutoField()
+    channel = CharField()
+    payload = TextField()
+    state = CharField(default='queued')
+    attempt = IntegerField(default=0)
+    due_at = DateTimeField(default=datetime.now)
+    error = TextField(default='')
+
+    class Meta:
+        indexes = ((('state', 'due_at', 'id'), False),)
+
+
+def save_configs(values):
+    if not values:
+        return
+    with connection(), db.atomic():
+        Config.insert_many([{'key': key, 'value': value, 'updated_at': datetime.now()}
+                            for key, value in values.items()]).on_conflict(
+            conflict_target=[Config.key], preserve=[Config.value, Config.updated_at]).execute()
+
+
 def init_config():
     """初始化系统配置（从环境变量读取默认值）"""
     import os
@@ -86,7 +156,7 @@ def init_config():
         # 配置项及其默认值
         default_configs = {
             'admin_password': os.getenv('ADMIN_PASSWORD', 'acgo123321'),
-            'auto_clean_logs': os.getenv('AUTO_CLEAN_LOGS', 'false'),
+            'auto_clean_logs': os.getenv('AUTO_CLEAN_LOGS', 'true'),
             'max_logs_count': os.getenv('MAX_LOGS_COUNT', '500')
         }
         
@@ -99,7 +169,7 @@ def init_config():
                     value=default_value,
                     updated_at=datetime.now()
                 )
-                print(f'初始化配置: {key} = {default_value}')
+                print(f'初始化配置: {key}')
     
     finally:
         db.close()
@@ -110,12 +180,22 @@ def migrate_database():
     db.connect(reuse_if_open=True)
 
     try:
+        account_columns = {column.name for column in db.get_columns('accounts')}
+        for name, definition in {
+            'task_type': "VARCHAR(10) NOT NULL DEFAULT 'curl'",
+            'script_content': "TEXT NOT NULL DEFAULT ''",
+            'version': 'INTEGER NOT NULL DEFAULT 1',
+        }.items():
+            if name not in account_columns:
+                db.execute_sql(f'ALTER TABLE accounts ADD COLUMN {name} {definition}')
+
         # 检查 checkin_logs 表是否存在新字段
         cursor = db.execute_sql("PRAGMA table_info(checkin_logs)")
         columns = [row[1] for row in cursor.fetchall()]
 
         # 需要添加的新字段
         new_fields = {
+            'exit_code': 'INTEGER',
             'request_method': 'VARCHAR(10)',
             'request_url': 'TEXT',
             'request_headers': 'TEXT',
@@ -129,10 +209,16 @@ def migrate_database():
                 print(f'添加字段: {field_name}')
                 db.execute_sql(f'ALTER TABLE checkin_logs ADD COLUMN {field_name} {field_type}')
 
+        db.execute_sql('CREATE INDEX IF NOT EXISTS log_time ON checkin_logs (executed_at DESC, id DESC)')
+        db.execute_sql('CREATE INDEX IF NOT EXISTS log_status_time ON checkin_logs (status, executed_at DESC, id DESC)')
+        db.execute_sql('CREATE INDEX IF NOT EXISTS account_created ON accounts (created_at DESC, id DESC)')
+        db.create_tables([Execution, Notification], safe=True)
+        db.execute_sql("CREATE UNIQUE INDEX IF NOT EXISTS execution_active_account ON execution (account_id) WHERE state IN ('queued', 'running', 'retry_wait')")
         print('数据库迁移完成')
 
     except Exception as e:
         print(f'数据库迁移失败: {e}')
+        raise
 
     finally:
         db.close()

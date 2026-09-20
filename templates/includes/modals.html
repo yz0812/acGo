@@ -15,8 +15,35 @@
                 </div>
 
                 <div class="form-group">
+                    <label for="taskType">执行方式</label>
+                    <select id="taskType" onchange="changeTaskType()">
+                        <option value="curl">Curl 命令</option>
+                        <option value="javascript">JavaScript 脚本</option>
+                        <option value="python">Python 脚本</option>
+                    </select>
+                    <small id="taskHelp"></small>
+                </div>
+
+                <div class="form-group" id="curlEditor">
                     <label for="curlCommand">Curl 命令 *</label>
                     <textarea id="curlCommand" rows="6" required placeholder="粘贴完整的 curl 命令，例如：&#10;curl 'https://api.example.com/checkin' \&#10;  -H 'Authorization: Bearer token123' \&#10;  -H 'Content-Type: application/json' \&#10;  --data-raw '{&quot;user_id&quot;: 123}'"></textarea>
+                </div>
+
+                <div class="form-group" id="scriptEditor" hidden>
+                    <label for="scriptContent" id="scriptLabel">脚本内容 *</label>
+                    <textarea id="scriptContent" rows="12" maxlength="50000" spellcheck="false" placeholder="输入脚本，或点击下方填入示例"></textarea>
+                </div>
+
+                <div class="task-demo">
+                    <div class="task-demo-header">
+                        <span>参考示例</span>
+                        <button type="button" class="btn btn-sm btn-secondary" onclick="insertTaskDemo()">填入示例</button>
+                    </div>
+                    <details>
+                        <summary>查看当前方式的 Demo</summary>
+                        <pre id="taskDemo"></pre>
+                    </details>
+                    <small>示例请求 httpbin 回显服务；实际使用时请替换接口地址和认证信息。</small>
                 </div>
 
                 <div class="form-group">
@@ -114,7 +141,7 @@
                         <input type="checkbox" id="autoCleanLogs">
                         启用自动清理
                     </label>
-                    <small>启用后，每天凌晨 3:00 自动清理超出限制的旧记录</small>
+                    <small>启用后，每 10 秒分批清理超出限制的旧记录</small>
                 </div>
 
                 <div class="form-group">
@@ -305,5 +332,15 @@
                 <button onclick="closeRequestPreviewModal()" class="btn btn-secondary">关闭</button>
             </div>
         </div>
+    </div>
+</div>
+
+<div id="scriptPreviewModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 id="scriptPreviewTitle">脚本详情</h3>
+            <button type="button" class="btn btn-sm btn-secondary" onclick="closeScriptPreview()">关闭</button>
+        </div>
+        <div class="modal-body"><pre id="scriptPreviewContent" class="script-preview"></pre></div>
     </div>
 </div>

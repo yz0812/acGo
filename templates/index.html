@@ -43,6 +43,7 @@
             <div class="section-header">
                 <h2>账号管理</h2>
                 <div class="section-actions">
+                    <button onclick="loadAccounts()" class="btn btn-secondary">刷新账号</button>
                     <button onclick="showAddModal()" class="btn btn-primary">添加账号</button>
 {#                    <button onclick="showAppSelectionModal()" class="btn btn-success">添加自定义账号</button>#}
                     <button onclick="exportAccounts()" class="btn btn-secondary">导出账号</button>
@@ -69,6 +70,11 @@
                         <tr><td colspan="8" style="text-align:center;">加载中...</td></tr>
                     </tbody>
                 </table>
+                <div class="pagination">
+                    <button id="accountsPrev" onclick="loadAccounts(accountsPage - 1)" class="btn btn-sm btn-secondary">上一页</button>
+                    <span id="accountsPageInfo" aria-live="polite"></span>
+                    <button id="accountsNext" onclick="loadAccounts(accountsPage + 1)" class="btn btn-sm btn-secondary">下一页</button>
+                </div>
             </div>
         </section>
 
@@ -95,7 +101,7 @@
                             <th>ID</th>
                             <th>账号名称</th>
                             <th>状态</th>
-                            <th>响应码</th>
+                            <th>响应码 / 退出码</th>
                             <th>响应内容</th>
                             <th>错误信息</th>
                             <th>执行时间</th>
@@ -122,6 +128,7 @@
     {% include 'includes/modals.html' %}
 
     <!-- 引入 JavaScript -->
+    <script src="{{ url_for('static', filename='js/task-editor.js') }}"></script>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>

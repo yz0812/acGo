@@ -5,6 +5,17 @@ services:
     build: .
     container_name: acgo
     restart: unless-stopped
+    init: true
+    mem_limit: 640m
+    memswap_limit: 640m
+    cpus: 1.0
+    pids_limit: 128
+    stop_grace_period: 150s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "5000:5000"
     volumes:
@@ -15,17 +26,21 @@ services:
       - ADMIN_PASSWORD=acgo123321
       # Flask 密钥（可选，已有安全默认值）
       - SECRET_KEY=a8f5f167f44f4964e6c998dee827110c5b92c0f8d1e3a7b2c4f6e8d0a2b4c6e8
-      # 自动清理签到记录（可选，默认：false）
-      # 设置为 true 启用自动清理，每天凌晨 3:00 执行
-      - AUTO_CLEAN_LOGS=false
+      # 新数据库默认开启；已有数据库在系统设置中调整
+      - AUTO_CLEAN_LOGS=true
       # 最大签到记录数（可选，默认：500）
       # 当启用自动清理时，保留最新的 N 条记录
       - MAX_LOGS_COUNT=500
+      - WEB_THREADS=4
+      - HTTP_WORKERS=2
+      - SCRIPT_WORKERS=1
+      - TASK_QUEUE_LIMIT=32
+      - SCRIPT_MEMORY_MB=192
     # 或者使用 .env 文件
     # env_file:
     #   - .env
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/login"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/health"]
       interval: 30s
       timeout: 3s
       retries: 3
