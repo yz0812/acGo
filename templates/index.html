@@ -11,8 +11,8 @@
         <header>
             <h1>签到管理系统</h1>
             <div class="header-actions">
-                <a href="{{ url_for('notify') }}" class="btn btn-primary">推送通知</a>
-                <button onclick="showSystemSettingsModal()" class="btn btn-primary">系统设置</button>
+                <a href="{{ url_for('notify') }}" class="btn btn-secondary">推送通知</a>
+                <button onclick="showSystemSettingsModal()" class="btn btn-secondary">系统设置</button>
                 <button onclick="loadStats()" class="btn btn-secondary">刷新统计</button>
                 <a href="{{ url_for('logout') }}" class="btn btn-secondary">退出登录</a>
             </div>
@@ -42,7 +42,7 @@
         <section class="section">
             <div class="section-header">
                 <h2>账号管理</h2>
-                <div style="display: flex; gap: 10px;">
+                <div class="section-actions">
                     <button onclick="showAddModal()" class="btn btn-primary">添加账号</button>
 {#                    <button onclick="showAppSelectionModal()" class="btn btn-success">添加自定义账号</button>#}
                     <button onclick="exportAccounts()" class="btn btn-secondary">导出账号</button>
@@ -76,8 +76,8 @@
         <section class="section">
             <div class="section-header">
                 <h2>签到记录</h2>
-                <div style="display: flex; gap: 10px; align-items: center;">
-                    <select id="statusFilter" onchange="filterLogsByStatus()" style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: pointer;">
+                <div class="section-actions">
+                    <select id="statusFilter" onchange="filterLogsByStatus()" aria-label="筛选签到状态">
                         <option value="">全部状态</option>
                         <option value="success">成功</option>
                         <option value="failed">失败</option>

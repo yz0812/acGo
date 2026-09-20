@@ -145,8 +145,17 @@ MAX_LOGS_COUNT=500
 
 #### 3. 启动服务
 
+Windows 用户可双击项目根目录的 `start.bat`，自动激活 `venv`（不存在时尝试 `.venv`）并启动服务，也可在 PowerShell 中运行 `./start.bat`。首次使用需先创建虚拟环境并安装依赖：
+
+```powershell
+python -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+其他平台或手动启动：
+
 ```bash
-python app.py
+python run.py
 ```
 
 **注意**：首次启动时会自动创建数据库和表结构，无需手动初始化。
