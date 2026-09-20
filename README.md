@@ -1,5 +1,7 @@
 # 签到管理系统 (ACGO)
 
+当前版本：**v2.0.0**。变更及升级说明见 [CHANGELOG](CHANGELOG.md)。
+
 一个轻量级的自动签到管理系统，支持通过 Curl 命令配置签到任务，使用 Cron 表达式定时执行。
 
 ## 功能特性
@@ -83,7 +85,7 @@ docker run -d \
 
 **可用标签：**
 - `latest` - 最新稳定版本
-- `v1.0.0` - 指定版本号
+- `2.0.0` - 指定镜像版本（对应 Git 标签 `v2.0.0`）
 - `20231223120000` - 时间戳版本
 - `sha-abc1234` - Git commit 版本
 
@@ -358,7 +360,7 @@ acgo/
 ### 触发条件
 
 - **Push 到 main/master 分支**：自动构建并推送 `latest` 标签
-- **创建版本标签**（如 `v1.0.0`）：自动构建并推送版本标签
+- **创建并推送版本标签**（如 `v2.0.0`）：自动构建并推送版本镜像
 - **Pull Request**：仅构建测试，不推送镜像
 
 ### 多平台支持
@@ -371,13 +373,13 @@ acgo/
 
 ```bash
 # 1. 创建版本标签
-git tag v1.0.0
+git tag -a v2.0.0 -m "迭代 v2.0.0"
 
 # 2. 推送标签到 GitHub
-git push origin v1.0.0
+git push origin v2.0.0
 
 # 3. GitHub Actions 自动构建并推送镜像
-# 镜像地址：ghcr.io/your-username/acgo:v1.0.0
+# 镜像地址：ghcr.io/your-username/acgo:2.0.0
 ```
 
 ### 查看构建状态
