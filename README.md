@@ -21,7 +21,7 @@
 
 ## 1 核 1G 部署
 
-建议使用仓库中的 `docker-compose.yml`，默认限制容器为 1 CPU / 640MiB、128 个进程/线程，并配置日志轮转。镜像构建建议在开发机或 CI 完成。代码更新后执行 `docker compose up -d --build`；仅拉取旧的预构建镜像不会包含这些改动。
+建议使用仓库中的 `docker-compose.yml`，默认限制容器为 1 CPU / 640MiB、128 个进程/线程，并配置日志轮转。默认拉取 `ghcr.io/yz0812/acgo:2.0.0` 预构建镜像，无需在服务器上编译。Linux 下载配置并启动的命令见下文；升级版本时修改 `.env` 中的 `ACGO_IMAGE`，再执行 `docker compose up -d --pull always`。
 
 - **唯一入口**：`python run.py` 使用生产级 Waitress；数据库初始化和调度器不在模块导入时启动。数据目录有进程锁，不能启用多个实例共用同一目录。
 - **执行额度**：默认 2 个 HTTP 工作线程、1 个脚本工作线程，最多 32 个未完成任务。手动和定时共用队列，同一账号的重复提交返回现有执行 ID。
@@ -60,13 +60,55 @@ python tests/benchmark_profile.py
 
 ### 方式 1：Docker 部署（推荐）
 
+#### Linux：一键部署脚本（推荐）
+
+服务器需已安装 [Docker Engine](https://docs.docker.com/engine/install/)、新版 [Compose 插件](https://docs.docker.com/compose/install/linux/)（支持 `--wait` / `--wait-timeout`）和 `curl`，当前用户需有 Docker 使用权限。
+
+从 GitHub Raw 下载脚本并执行，即可完成部署，无需克隆源码或手动创建配置：
+
+```bash
+curl -fL --retry 3 https://raw.githubusercontent.com/yz0812/acGo/main/deploy.sh -o deploy.sh && sh deploy.sh
+```
+
+脚本默认部署到 `/data/acgo`，自动下载 `docker-compose.yml` 和 `.env.example`，生成 `.env`、随机管理员密码及会话密钥，然后拉取镜像并启动服务。健康检查通过后显示访问地址和首次生成的密码；密码也保存在权限为 `600` 的 `.env` 中。依赖缺失、下载失败或服务启动失败时，脚本返回错误。
+
+默认目录需要当前用户有创建和写入权限；也可以指定其他部署目录：
+
+```bash
+sh deploy.sh /opt/acgo
+```
+
+重复执行会保留已有 `docker-compose.yml`、`.env` 和 `data`，继续使用原配置启动服务。已有数据库的管理员密码保持不变。
+
+浏览器访问 `http://服务器IP:5000`，使用脚本输出的初始化密码登录；远程访问需在服务器防火墙/安全组放行 TCP 5000。默认数据库目录为 `/data/acgo/data`。
+
+常用管理命令（在 `/data/acgo` 目录执行）：
+
+```bash
+docker compose ps           # 查看容器及健康状态
+docker compose logs -f --tail=100  # 查看日志
+docker compose down         # 停止并移除容器，保留 ./data
+# 修改 .env 后重新创建容器，使环境变量生效
+docker compose up -d --force-recreate
+```
+
+Compose 默认固定使用 `2.0.0` 镜像；升级时先正常停止服务并备份 `data`，将 `.env` 中的 `ACGO_IMAGE` 改为已发布的新镜像版本，再执行启动命令。管理员密码、日志开关等业务配置仅在首次初始化数据库时从环境变量读取，已有部署请在页面“系统设置”中修改。
+
+如果需要从源码构建，在克隆的项目目录中准备 `.env` 后执行（建议在开发机上构建）：
+
+```bash
+[ -f .env ] || cp .env.example .env
+docker build -t acgo:local .
+ACGO_IMAGE=acgo:local docker compose up -d --pull never
+```
+
 #### 使用 GHCR 预构建镜像（最快）
 
 直接使用 GitHub Container Registry 的预构建镜像，无需本地构建：
 
 ```bash
 # 拉取最新镜像（支持 amd64 和 arm64）
-docker pull ghcr.io/your-username/acgo:latest
+docker pull ghcr.io/yz0812/acgo:latest
 
 # 运行容器
 docker run -d \
@@ -76,7 +118,7 @@ docker run -d \
   -e ADMIN_PASSWORD=acgo123321 \
   -e AUTO_CLEAN_LOGS=true \
   -e MAX_LOGS_COUNT=500 \
-  ghcr.io/your-username/acgo:latest
+  ghcr.io/yz0812/acgo:latest
 
 # 访问系统
 # 浏览器打开 http://localhost:5000
@@ -88,21 +130,6 @@ docker run -d \
 - `2.0.0` - 指定镜像版本（对应 Git 标签 `v2.0.0`）
 - `20231223120000` - 时间戳版本
 - `sha-abc1234` - Git commit 版本
-
-#### 使用 Docker Compose（最简单）
-
-```bash
-# 1. 克隆或下载项目
-git clone <repository-url>
-cd acgo
-
-# 2. 启动服务
-docker-compose up -d
-
-# 3. 访问系统
-# 浏览器打开 http://localhost:5000
-# 默认密码：acgo123321
-```
 
 #### 使用 Docker 命令
 
@@ -126,13 +153,15 @@ docker logs -f acgo
 
 #### 自定义配置
 
-编辑 `docker-compose.yml` 中的环境变量：
+编辑 `.env`，Compose 会通过 `env_file` 将配置传入容器：
 
-```yaml
-environment:
-  - ADMIN_PASSWORD=your_password  # 修改管理员密码
-  - SECRET_KEY=your_secret_key    # 修改密钥（可选）
+```env
+ADMIN_PASSWORD=your_password
+SECRET_KEY=your_random_secret_key
+ACGO_IMAGE=ghcr.io/yz0812/acgo:2.0.0
 ```
+
+修改后执行 `docker compose up -d --force-recreate`。
 
 ### 方式 2：本地部署
 
@@ -379,7 +408,7 @@ git tag -a v2.0.0 -m "迭代 v2.0.0"
 git push origin v2.0.0
 
 # 3. GitHub Actions 自动构建并推送镜像
-# 镜像地址：ghcr.io/your-username/acgo:2.0.0
+# 镜像地址：ghcr.io/yz0812/acgo:2.0.0
 ```
 
 ### 查看构建状态

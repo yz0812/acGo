@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   acgo:
-    build: .
+    image: ${ACGO_IMAGE:-ghcr.io/yz0812/acgo:2.0.0}
     container_name: acgo
     restart: unless-stopped
     init: true
@@ -21,24 +19,8 @@ services:
     volumes:
       # 持久化数据库
       - ./data:/app/data
-    environment:
-      # 管理员密码（可选，默认：acgo123321）
-      - ADMIN_PASSWORD=acgo123321
-      # Flask 密钥（可选，已有安全默认值）
-      - SECRET_KEY=a8f5f167f44f4964e6c998dee827110c5b92c0f8d1e3a7b2c4f6e8d0a2b4c6e8
-      # 新数据库默认开启；已有数据库在系统设置中调整
-      - AUTO_CLEAN_LOGS=true
-      # 最大签到记录数（可选，默认：500）
-      # 当启用自动清理时，保留最新的 N 条记录
-      - MAX_LOGS_COUNT=500
-      - WEB_THREADS=4
-      - HTTP_WORKERS=2
-      - SCRIPT_WORKERS=1
-      - TASK_QUEUE_LIMIT=32
-      - SCRIPT_MEMORY_MB=192
-    # 或者使用 .env 文件
-    # env_file:
-    #   - .env
+    env_file:
+      - .env
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/health"]
       interval: 30s
