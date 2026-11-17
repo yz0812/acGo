@@ -4,12 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>推送通知渠道 - 签到管理系统</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}?v=acgo-logo-1" sizes="any">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>推送通知渠道</h1>
+            <h1 class="brand">
+                <img class="brand-icon" src="{{ url_for('static', filename='logo.svg') }}" alt="" width="44" height="44">
+                <span class="brand-copy"><span class="brand-name">ACGO</span><span class="brand-caption">推送通知渠道</span></span>
+            </h1>
             <div class="header-actions">
                 <a href="{{ url_for('index') }}" class="btn btn-secondary">返回首页</a>
                 <a href="{{ url_for('logout') }}" class="btn btn-secondary">退出登录</a>

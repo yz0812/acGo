@@ -1,3 +1,5 @@
+<p align="center"><img src="static/logo.svg" alt="ACGO Logo" width="96" height="96"></p>
+
 # 签到管理系统 (ACGO)
 
 当前版本：**v2.0.0**。变更及升级说明见 [CHANGELOG](CHANGELOG.md)。

@@ -4,11 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>登录 - 签到管理系统</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}?v=acgo-logo-1" sizes="any">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
     <div class="login-container">
-        <h1 class="login-title">签到管理系统</h1>
+        <h1 class="login-title brand brand-login">
+                <img class="brand-icon" src="{{ url_for('static', filename='logo.svg') }}" alt="" width="44" height="44">
+                <span class="brand-copy"><span class="brand-name">ACGO</span><span class="brand-caption">签到管理系统</span></span>
+            </h1>
 
         {% if error %}
         <div class="error-message">{{ error }}</div>

@@ -918,3 +918,14 @@ td[colspan] { padding: 36px 16px; color: var(--muted-foreground); }
 .task-demo pre, .script-preview { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.7 var(--font-mono); }
 .task-demo pre { margin-top: 12px; }
 .task-demo small { display: block; margin-top: 10px; color: var(--muted-foreground); }
+
+/* Shared ACGO identity */
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-icon { display: block; width: 44px; height: 44px; flex-shrink: 0; }
+.brand-copy { display: flex; flex-direction: column; gap: 2px; }
+.brand-name { font-size: 23px; font-weight: 800; letter-spacing: .06em; line-height: 1.2; }
+.brand-caption { font-size: 13px; font-weight: 500; color: var(--muted-foreground); line-height: 1.5; }
+.brand-login { flex-direction: column; gap: 16px; }
+.brand-login .brand-icon { width: 72px; height: 72px; }
+.brand-login .brand-name { font-size: 30px; }
+.brand-login .brand-caption { font-size: 15px; }
